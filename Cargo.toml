@@ -1,0 +1,6 @@
+[package]
+name = "msod-stat"
+version = "0.1.0"
+authors = ["Jonathan Giddy <jongiddy@gmail.com>"]
+
+[dependencies]
