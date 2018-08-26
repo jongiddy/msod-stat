@@ -1,11 +1,13 @@
 extern crate open;
 extern crate oauth2;
 extern crate reqwest;
+extern crate serde_json;
 extern crate tiny_http;
 extern crate url;
 
 use std::io::{self, BufRead};
 use reqwest::{header, StatusCode};
+use serde_json::Value;
 use oauth2::prelude::*;
 use oauth2::basic::BasicTokenType;
 
@@ -63,4 +65,23 @@ fn main() {
     let result = response.text().unwrap();
     println!("{:?}", response);
     println!("{}", result);
+    let json: Value = serde_json::from_str(&result).unwrap();
+    for drive in json["value"].as_array().unwrap() {
+        let quota = &drive["quota"];
+        let total = quota["total"].as_u64().unwrap();
+        let used = quota["used"].as_u64().unwrap();
+        let deleted = quota["deleted"].as_u64().unwrap();
+        let remaining = quota["remaining"].as_u64().unwrap();
+        assert!(used + remaining == total);
+        println!("Drive {}", drive["id"].as_str().unwrap());
+        println!("total:\t{:10.3}GiB", total as f32 / 1024.0 / 1024.0 / 1024.0);
+        println!("free:\t{:10.3}GiB", remaining as f32 / 1024.0 / 1024.0 / 1024.0);
+        println!(
+            "used:\t{:10.3}GiB (of which {:.3}GiB deleted)",
+            used as f32 / 1024.0 / 1024.0 / 1024.0,
+            deleted as f32 / 1024.0 / 1024.0 / 1024.0
+        );
+        println!("{:.2}% used", used as f32 * 100.0 / total as f32);
+        println!();
+    }
 }

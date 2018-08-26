@@ -7,5 +7,6 @@ authors = ["Jonathan Giddy <jongiddy@gmail.com>"]
 oauth2 = { git = "https://github.com/ramosbugs/oauth2-rs" }
 open = "*"
 reqwest = "*"
+serde_json = "*"
 tiny_http = "*"
 url = "*"
