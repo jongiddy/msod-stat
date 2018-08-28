@@ -74,14 +74,25 @@ fn main() {
         let remaining = quota["remaining"].as_u64().unwrap();
         assert!(used + remaining == total);
         println!("Drive {}", drive["id"].as_str().unwrap());
-        println!("total:\t{:10.3}GiB", total as f32 / 1024.0 / 1024.0 / 1024.0);
-        println!("free:\t{:10.3}GiB", remaining as f32 / 1024.0 / 1024.0 / 1024.0);
+        println!("total:\t{:>18}", size_as_string(total));
+        println!("free:\t{:>18}", size_as_string(remaining));
         println!(
-            "used:\t{:10.3}GiB (of which {:.3}GiB deleted)",
-            used as f32 / 1024.0 / 1024.0 / 1024.0,
-            deleted as f32 / 1024.0 / 1024.0 / 1024.0
+            "used:\t{:>18} = {:.2}% (including {} pending deletion)",
+            size_as_string(used),
+            used as f32 * 100.0 / total as f32,
+            size_as_string(deleted)
         );
-        println!("{:.2}% used", used as f32 * 100.0 / total as f32);
         println!();
+    }
+}
+
+fn size_as_string(value: u64) -> String {
+    let mib = value as f32 / 1024.0 / 1024.0;
+    if mib < 1000.0 {
+        format!("{:.3}MiB", mib)
+    }
+    else {
+        let gib = mib / 1024.0;
+        format!("{:.3}GiB", gib)
     }
 }
