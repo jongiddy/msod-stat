@@ -40,15 +40,14 @@ fn main() {
     }
     let token = auth::authenticate(username, password).unwrap();
     println!("{:?}", token);
-    let mut headers = header::Headers::new();
+    let mut headers = header::HeaderMap::new();
     match token.token_type() {
         BasicTokenType::Bearer => {
-            headers.set(
-                header::Authorization(
-                    header::Bearer {
-                       token: token.access_token().secret().to_string()
-                   }
-               )
+            headers.insert(
+                header::AUTHORIZATION,
+                header::HeaderValue::from_str(
+                    &format!("Bearer {}", token.access_token().secret().to_string())
+                ).unwrap()
             );
         },
         BasicTokenType::Mac => {
@@ -59,7 +58,7 @@ fn main() {
     let client = reqwest::Client::builder().default_headers(headers).build().unwrap();
 
     let mut response = client.get("https://graph.microsoft.com/v1.0/me/drives").send().unwrap();
-    if response.status() != StatusCode::Ok {
+    if response.status() != StatusCode::OK {
         panic!("{:?} {}", response.status(), response.status().canonical_reason().unwrap());
     }
     let result = response.text().unwrap();
