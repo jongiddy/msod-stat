@@ -7,7 +7,9 @@ use oauth2::{
     ClientId,
     ClientSecret,
     CsrfToken,
+    PkceCodeVerifierS256,
     RedirectUrl,
+    ResponseType,
     Scope,
     TokenUrl
 };
@@ -124,10 +126,20 @@ pub fn authenticate(client_id: String, client_secret: String)
             RedirectUrl::new(Url::parse("http://localhost:3003/redirect").unwrap())
         );
 
+    // Setup PKCE code challenge
+    let code_verifier = PkceCodeVerifierS256::new_random();
+
     // Generate the full authorization URL.
-    let (auth_url, csrf_token) = client.authorize_url(CsrfToken::new_random);
+    let (auth_url, csrf_token) = client.authorize_url_extension(
+        &ResponseType::new("code".to_string()),
+        CsrfToken::new_random,
+        &code_verifier.authorize_url_params(),
+    );
 
     let authorization_code = get_authorization_code(auth_url, csrf_token).unwrap();
 
-    client.exchange_code(AuthorizationCode::new(authorization_code))
+    // Send the PKCE code verifier in the token request
+    let params: Vec<(&str, &str)> = vec![("code_verifier", &code_verifier.secret())];
+
+    client.exchange_code_extension(AuthorizationCode::new(authorization_code), &params)
 }
