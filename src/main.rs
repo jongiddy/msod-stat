@@ -5,13 +5,49 @@ extern crate serde_json;
 extern crate tiny_http;
 extern crate url;
 
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Write};
 use reqwest::{header, StatusCode};
 use serde_json::Value;
 use oauth2::prelude::*;
 use oauth2::basic::BasicTokenType;
 
 mod auth;
+
+
+fn process_drive(client: &reqwest::Client, drive_id: &str) -> (u32, u32) {
+    let uri = format!("https://graph.microsoft.com/v1.0/me/drives/{}/root/children", drive_id);
+    process_items(client, drive_id, &uri)
+}
+
+fn process_items(client: &reqwest::Client, drive_id: &str, uri: &str) -> (u32, u32) {
+    let mut file_count = 0;
+    let mut folder_count = 0;
+    let mut response = client.get(uri).send().unwrap();
+    if response.status() != StatusCode::OK {
+        panic!("{:?} {}", response.status(), response.status().canonical_reason().unwrap());
+    }
+    let result = response.text().unwrap();
+    let json: Value = serde_json::from_str(&result).unwrap();
+    for item in json["value"].as_array().unwrap() {
+        if item.get("file").is_some() {
+            file_count += 1;
+        }
+        else if item.get("folder").is_some() || item.get("specialFolder").is_some() {
+            folder_count += 1;
+            let item_id = item["id"].as_str().unwrap();
+            let uri = format!("https://graph.microsoft.com/v1.0/me/drives/{}/items/{}/children", drive_id, item_id);
+            print!(".");
+            io::stdout().flush().unwrap();
+            let (file_inc, folder_inc) = process_items(client, drive_id, &uri);
+            file_count += file_inc;
+            folder_count += folder_inc;
+        }
+        else {
+            print!("(ignoring {})", item["name"].as_str().unwrap());
+        }
+    }
+    (file_count, folder_count)
+}
 
 
 fn main() {
@@ -65,33 +101,45 @@ fn main() {
     println!("{:?}", response);
     println!("{}", result);
     let json: Value = serde_json::from_str(&result).unwrap();
+    let mut drive_ids = vec![];
     for drive in json["value"].as_array().unwrap() {
+        let id = drive["id"].as_str().unwrap();
+        let (file_count, folder_count) = process_drive(&client, id);
+        drive_ids.push(id.to_string());
         let quota = &drive["quota"];
         let total = quota["total"].as_u64().unwrap();
         let used = quota["used"].as_u64().unwrap();
         let deleted = quota["deleted"].as_u64().unwrap();
         let remaining = quota["remaining"].as_u64().unwrap();
         assert!(used + remaining == total);
-        println!("Drive {}", drive["id"].as_str().unwrap());
-        println!("total:\t{:>18}", size_as_string(total));
-        println!("free:\t{:>18}", size_as_string(remaining));
+        println!();
+        println!("Drive {}", id);
+        println!("folders:{:>10}", folder_count);
+        println!("files:  {:>10}", file_count);
+        println!("total:  {:>18}", size_as_string(total));
+        println!("free:   {:>18}", size_as_string(remaining));
         println!(
-            "used:\t{:>18} = {:.2}% (including {} pending deletion)",
+            "used:   {:>18} = {:.2}% (including {} pending deletion)",
             size_as_string(used),
             used as f32 * 100.0 / total as f32,
             size_as_string(deleted)
         );
-        println!();
     }
 }
 
 fn size_as_string(value: u64) -> String {
-    let mib = value as f32 / 1024.0 / 1024.0;
-    if mib < 1000.0 {
-        format!("{:.3}MiB", mib)
+    if value < 32 * 1024 {
+        format!("{} bytes", value)
     }
     else {
-        let gib = mib / 1024.0;
-        format!("{:.3}GiB", gib)
+        let mib = value as f32 / 1024.0 / 1024.0;
+        if mib < 1000.0 {
+            format!("{:.3} MiB", mib)
+        }
+        else {
+            let gib = mib / 1024.0;
+            format!("{:.3} GiB", gib)
+        }
     }
+
 }
