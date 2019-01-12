@@ -182,7 +182,10 @@ fn main() {
         }
     }
 
-    let client = reqwest::Client::builder().timeout(None).default_headers(headers).build().unwrap();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .default_headers(headers)
+        .build().unwrap();
 
     let mut response = client.get("https://graph.microsoft.com/v1.0/me/drives").send().unwrap();
     if response.status() != StatusCode::OK {
