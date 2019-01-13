@@ -6,6 +6,7 @@ extern crate tiny_http;
 extern crate url;
 
 use std::io::{self, BufRead, Write};
+use std::time::Duration;
 use reqwest::{header, StatusCode};
 use serde_json::{json, Value};
 use oauth2::prelude::*;
@@ -30,11 +31,47 @@ impl<'a> DriveSyncPageIterator<'a> {
 }
 
 fn get(client: &reqwest::Client, uri: &str) -> Result<String, reqwest::Error> {
-    let mut response = client.get(uri).send()?;
-    if response.status() != StatusCode::OK {
-        panic!("{:?} {}", response.status(), response.status().canonical_reason().unwrap());
+    let mut retries = 3;
+    let mut default_delay = 1;
+    loop {
+        let retry_delay = Duration::from_secs(
+            match client.get(uri).send() {
+                Ok(mut response) => match response.status() {
+                    StatusCode::OK => {
+                        return response.text();
+                    },
+                    status if retries > 0 => {
+                        let delay = match response.headers().get("Retry-After") {
+                            Some(value) => {
+                                value.to_str().unwrap().parse().unwrap()
+                            },
+                            None => {
+                                default_delay
+                            }
+                        };
+                        print!("(HTTP status {})", status);
+                        io::stdout().flush().unwrap();
+                        delay
+                    },
+                    status => {
+                        panic!("{:?} {}", status, status.canonical_reason().unwrap());
+                    }
+                },
+                Err(ref err) if retries > 0 => {
+                    println!("{:?}", err);
+                    default_delay
+                },
+                Err(err) => {
+                    return Err(err);
+                }
+            }
+        );
+        print!("(wait {:?})", retry_delay);
+        io::stdout().flush().unwrap();
+        std::thread::sleep(retry_delay);
+        retries -= 1;
+        default_delay *= 16;
     }
-    response.text()
 }
 
 impl<'a> Iterator for DriveSyncPageIterator<'a> {
@@ -47,16 +84,8 @@ impl<'a> Iterator for DriveSyncPageIterator<'a> {
                 None
             },
             Some(uri) => {
-                let mut json: Value = match get(self.client, &uri) {
-                    Ok(result) => {
-                        serde_json::from_str(&result).unwrap()
-                    },
-                    Err(err) => {
-                        println!("Retrying: {:?}", err);
-                        let result = get(self.client, &uri).unwrap();
-                        serde_json::from_str(&result).unwrap()
-                    }
-                };
+                let result = get(self.client, &uri).unwrap();
+                let mut json: Value = serde_json::from_str(&result).unwrap();
                 self.next_link = json.get("@odata.nextLink").map(|v| v.as_str().unwrap().to_owned());
                 json.get_mut("value").map(Value::take)
             }
@@ -183,7 +212,7 @@ fn main() {
     }
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
+        .timeout(Duration::from_secs(120))
         .default_headers(headers)
         .build().unwrap();
 
