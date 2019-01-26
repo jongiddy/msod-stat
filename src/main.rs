@@ -84,6 +84,8 @@ impl<'a> Iterator for DriveSyncPageIterator<'a> {
                 None
             },
             Some(uri) => {
+                print!(".");
+                io::stdout().flush().unwrap();
                 let result = get(self.client, &uri).unwrap();
                 let mut json: Value = serde_json::from_str(&result).unwrap();
                 self.next_link = json.get("@odata.nextLink").map(|v| v.as_str().unwrap().to_owned());
@@ -139,30 +141,37 @@ impl<'a> Iterator for DriveSyncItemIterator<'a> {
     }
 }
 
+fn get_items(client: &reqwest::Client, drive_id: &str) -> std::collections::HashMap<String, Value> {
+    let mut id_map = std::collections::HashMap::new();
+    for item in DriveSyncItemIterator::new(client, drive_id) {
+        let id = item.get("id").unwrap().as_str().unwrap();
+        if item.get("deleted").is_some() {
+            id_map.remove(id);
+        }
+        else {
+            id_map.insert(id.to_owned(), item);
+        }
+    }
+    id_map
+}
+
 fn process_drive(client: &reqwest::Client, drive_id: &str) -> (u32, u32, u64) {
-    let mut seen = std::collections::HashSet::<String>::new();
     let mut file_count = 0;
     let mut folder_count = 0;
     let mut total_size = 0u64;
-    for mut item in DriveSyncItemIterator::new(client, drive_id) {
-        if item.get("deleted").is_some() {
-            println!("{:?}", item);
-            continue;
-        }
-        let mut id_value = item.get_mut("id").map(Value::take).unwrap();
-        let id = id_value.as_str().unwrap();
-        if seen.contains(id) {
-            continue;
-        }
-        seen.insert(id.to_owned());
-        if item.get("file").is_some() {
+    for item in get_items(client, drive_id).values() {
+        if let Some(file) = item.get("file") {
             file_count += 1;
             total_size += item.get("size").unwrap().as_u64().unwrap();
+            if file.get("mimeType").unwrap().as_str().unwrap() != "application/msonenote" {
+                if file.get("hashes").and_then(|s| s.get("sha1Hash")).is_none() {
+                    println!("{:?}", item);
+                    panic!();
+                }
+            }
         }
         else if item.get("folder").is_some() || item.get("package").is_some() {
             folder_count += 1;
-            print!(".");
-            io::stdout().flush().unwrap();
         }
         else {
             print!("(ignoring {})", item["name"].as_str().unwrap());
@@ -170,7 +179,6 @@ fn process_drive(client: &reqwest::Client, drive_id: &str) -> (u32, u32, u64) {
     }
     (file_count, folder_count, total_size)
 }
-
 
 fn main() {
     // See https://docs.microsoft.com/en-us/onedrive/developer/rest-api/getting-started/graph-oauth
