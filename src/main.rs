@@ -139,10 +139,11 @@ impl<'a> Iterator for DriveSyncItemIterator<'a> {
     }
 }
 
-fn process_drive(client: &reqwest::Client, drive_id: &str) -> (u32, u32) {
+fn process_drive(client: &reqwest::Client, drive_id: &str) -> (u32, u32, u64) {
     let mut seen = std::collections::HashSet::<String>::new();
     let mut file_count = 0;
     let mut folder_count = 0;
+    let mut total_size = 0u64;
     for mut item in DriveSyncItemIterator::new(client, drive_id) {
         if item.get("deleted").is_some() {
             println!("{:?}", item);
@@ -156,6 +157,7 @@ fn process_drive(client: &reqwest::Client, drive_id: &str) -> (u32, u32) {
         seen.insert(id.to_owned());
         if item.get("file").is_some() {
             file_count += 1;
+            total_size += item.get("size").unwrap().as_u64().unwrap();
         }
         else if item.get("folder").is_some() || item.get("package").is_some() {
             folder_count += 1;
@@ -166,7 +168,7 @@ fn process_drive(client: &reqwest::Client, drive_id: &str) -> (u32, u32) {
             print!("(ignoring {})", item["name"].as_str().unwrap());
         }
     }
-    (file_count, folder_count)
+    (file_count, folder_count, total_size)
 }
 
 
@@ -227,7 +229,7 @@ fn main() {
     let mut drive_ids = vec![];
     for drive in json["value"].as_array().unwrap() {
         let id = drive["id"].as_str().unwrap();
-        let (file_count, folder_count) = process_drive(&client, id);
+        let (file_count, folder_count, total_size) = process_drive(&client, id);
         drive_ids.push(id.to_string());
         let quota = &drive["quota"];
         let total = quota["total"].as_u64().unwrap();
@@ -238,7 +240,7 @@ fn main() {
         println!();
         println!("Drive {}", id);
         println!("folders:{:>10}", folder_count);
-        println!("files:  {:>10}", file_count);
+        println!("files:  {:>10} ({})", file_count, size_as_string(total_size));
         println!("total:  {:>18}", size_as_string(total));
         println!("free:   {:>18}", size_as_string(remaining));
         println!(
