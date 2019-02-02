@@ -5,6 +5,7 @@ extern crate serde_json;
 extern crate tiny_http;
 extern crate url;
 
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, BufRead, Write};
 use std::time::Duration;
 use reqwest::{header, StatusCode};
@@ -141,8 +142,8 @@ impl<'a> Iterator for DriveSyncItemIterator<'a> {
     }
 }
 
-fn get_items(client: &reqwest::Client, drive_id: &str) -> std::collections::HashMap<String, Value> {
-    let mut id_map = std::collections::HashMap::new();
+fn get_items(client: &reqwest::Client, drive_id: &str) -> HashMap<String, Value> {
+    let mut id_map = HashMap::<String, Value>::new();
     for item in DriveSyncItemIterator::new(client, drive_id) {
         let id = item.get("id").unwrap().as_str().unwrap();
         if item.get("deleted").is_some() {
@@ -155,19 +156,29 @@ fn get_items(client: &reqwest::Client, drive_id: &str) -> std::collections::Hash
     id_map
 }
 
-fn process_drive(client: &reqwest::Client, drive_id: &str) -> (u32, u32, u64) {
+fn process_drive(client: &reqwest::Client, drive_id: &str)
+    -> (u32, u32, u64, BTreeMap<u64, HashMap<String, Vec<String>>>)
+{
+    let mut size_map = BTreeMap::<u64, HashMap<String, Vec<String>>>::new();
     let mut file_count = 0;
     let mut folder_count = 0;
     let mut total_size = 0u64;
     for item in get_items(client, drive_id).values() {
         if let Some(file) = item.get("file") {
             file_count += 1;
-            total_size += item.get("size").unwrap().as_u64().unwrap();
+            let size = item.get("size").unwrap().as_u64().unwrap();
+            total_size += size;
             if file.get("mimeType").unwrap().as_str().unwrap() != "application/msonenote" {
-                if file.get("hashes").and_then(|s| s.get("sha1Hash")).is_none() {
-                    println!("{:?}", item);
-                    panic!();
-                }
+                let sha1 = file.get("hashes").unwrap().get("sha1Hash").unwrap().as_str().unwrap();
+                let sha_map = size_map.entry(size).or_insert_with(HashMap::<String, Vec<String>>::new);
+                // allocating the key only on insert is messy - we could use raw_entry here,
+                // or maybe entry_ref() will exist one day - for now, always allocate
+                let v = sha_map.entry(sha1.to_owned()).or_insert_with(Vec::new);
+                let basename = item.get("name").unwrap().as_str().unwrap();
+                let dirname = item.get("parentReference").unwrap()
+                    .get("path").unwrap().as_str().unwrap().trim_start_matches("/drive/root:/");
+                let name = format!("{}/{}", dirname, basename);
+                v.push(name);
             }
         }
         else if item.get("folder").is_some() || item.get("package").is_some() {
@@ -177,7 +188,7 @@ fn process_drive(client: &reqwest::Client, drive_id: &str) -> (u32, u32, u64) {
             print!("(ignoring {})", item["name"].as_str().unwrap());
         }
     }
-    (file_count, folder_count, total_size)
+    (file_count, folder_count, total_size, size_map)
 }
 
 fn main() {
@@ -237,7 +248,7 @@ fn main() {
     let mut drive_ids = vec![];
     for drive in json["value"].as_array().unwrap() {
         let id = drive["id"].as_str().unwrap();
-        let (file_count, folder_count, total_size) = process_drive(&client, id);
+        let (file_count, folder_count, total_size, size_map) = process_drive(&client, id);
         drive_ids.push(id.to_string());
         let quota = &drive["quota"];
         let total = quota["total"].as_u64().unwrap();
@@ -257,6 +268,16 @@ fn main() {
             used as f32 * 100.0 / total as f32,
             size_as_string(deleted)
         );
+        for (size, sha_map) in size_map.iter().rev() {
+            for names in sha_map.values() {
+                if names.len() > 1 {
+                    println!("{}", size_as_string(*size));
+                    for name in names {
+                        println!("\t{}", name);
+                    }
+                }
+            }
+        }
     }
 }
 
