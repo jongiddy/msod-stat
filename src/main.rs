@@ -1,13 +1,7 @@
-extern crate open;
-extern crate oauth2;
-extern crate reqwest;
-extern crate serde_json;
-extern crate tiny_http;
-extern crate url;
-
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, BufRead, Write};
 use std::time::Duration;
+use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::{header, StatusCode};
 use serde_json::{json, Value};
 use oauth2::prelude::*;
@@ -50,7 +44,7 @@ fn get(client: &reqwest::Client, uri: &str) -> Result<String, reqwest::Error> {
                                 default_delay
                             }
                         };
-                        print!("(HTTP status {})", status);
+                        println!("HTTP status {}...", status);
                         io::stdout().flush().unwrap();
                         delay
                     },
@@ -67,8 +61,6 @@ fn get(client: &reqwest::Client, uri: &str) -> Result<String, reqwest::Error> {
                 }
             }
         );
-        print!("(wait {:?})", retry_delay);
-        io::stdout().flush().unwrap();
         std::thread::sleep(retry_delay);
         retries -= 1;
         default_delay *= 16;
@@ -85,8 +77,6 @@ impl<'a> Iterator for DriveSyncPageIterator<'a> {
                 None
             },
             Some(uri) => {
-                print!(".");
-                io::stdout().flush().unwrap();
                 let result = get(self.client, &uri).unwrap();
                 let mut json: Value = serde_json::from_str(&result).unwrap();
                 self.next_link = json.get("@odata.nextLink").map(|v| v.as_str().unwrap().to_owned());
@@ -142,32 +132,51 @@ impl<'a> Iterator for DriveSyncItemIterator<'a> {
     }
 }
 
-fn get_items(client: &reqwest::Client, drive_id: &str) -> HashMap<String, Value> {
+fn get_items(client: &reqwest::Client, drive_id: &str, used: u64) -> HashMap<String, Value> {
     let mut id_map = HashMap::<String, Value>::new();
+    let bar = ProgressBar::new(used);
+    bar.set_style(ProgressStyle::default_bar()
+        .template("[{elapsed_precise}] {wide_bar} {percent}%")
+        .progress_chars("#>-"));
+    let mut total = 0u64;
     for item in DriveSyncItemIterator::new(client, drive_id) {
+        bar.tick();
         let id = item.get("id").unwrap().as_str().unwrap();
+        let size = item.get("size").unwrap().as_u64().unwrap();
         if item.get("deleted").is_some() {
-            id_map.remove(id);
+            if let Some(prev) = id_map.remove(id) {
+                if prev.get("file").is_some() {
+                    total -= prev.get("size").unwrap().as_u64().unwrap();
+                    bar.set_position(total);
+                }
+            }
         }
         else {
-            id_map.insert(id.to_owned(), item);
+            if item.get("file").is_some() {
+                total += size;
+            }
+            if let Some(prev) = id_map.insert(id.to_owned(), item) {
+                if prev.get("file").is_some() {
+                    total -= prev.get("size").unwrap().as_u64().unwrap();
+                }
+            }
+            bar.set_position(total);
         }
     }
+    bar.finish_and_clear();
     id_map
 }
 
-fn process_drive(client: &reqwest::Client, drive_id: &str)
-    -> (u32, u32, u64, BTreeMap<u64, HashMap<String, Vec<String>>>)
+fn process_drive(client: &reqwest::Client, drive_id: &str, used: u64)
+    -> (u32, u32, BTreeMap<u64, HashMap<String, Vec<String>>>)
 {
     let mut size_map = BTreeMap::<u64, HashMap<String, Vec<String>>>::new();
     let mut file_count = 0;
     let mut folder_count = 0;
-    let mut total_size = 0u64;
-    for item in get_items(client, drive_id).values() {
+    for item in get_items(client, drive_id, used).values() {
         if let Some(file) = item.get("file") {
             file_count += 1;
             let size = item.get("size").unwrap().as_u64().unwrap();
-            total_size += size;
             if file.get("mimeType").unwrap().as_str().unwrap() != "application/msonenote" {
                 let sha1 = file.get("hashes").unwrap().get("sha1Hash").unwrap().as_str().unwrap();
                 let sha_map = size_map.entry(size).or_insert_with(HashMap::<String, Vec<String>>::new);
@@ -188,7 +197,7 @@ fn process_drive(client: &reqwest::Client, drive_id: &str)
             print!("(ignoring {})", item["name"].as_str().unwrap());
         }
     }
-    (file_count, folder_count, total_size, size_map)
+    (file_count, folder_count, size_map)
 }
 
 fn main() {
@@ -216,7 +225,6 @@ fn main() {
         password.pop();
     }
     let token = auth::authenticate(username, password).unwrap();
-    println!("{:?}", token);
     let mut headers = header::HeaderMap::new();
     match token.token_type() {
         BasicTokenType::Bearer => {
@@ -242,14 +250,9 @@ fn main() {
         panic!("{:?} {}", response.status(), response.status().canonical_reason().unwrap());
     }
     let result = response.text().unwrap();
-    println!("{:?}", response);
-    println!("{}", result);
     let json: Value = serde_json::from_str(&result).unwrap();
-    let mut drive_ids = vec![];
     for drive in json["value"].as_array().unwrap() {
         let id = drive["id"].as_str().unwrap();
-        let (file_count, folder_count, total_size, size_map) = process_drive(&client, id);
-        drive_ids.push(id.to_string());
         let quota = &drive["quota"];
         let total = quota["total"].as_u64().unwrap();
         let used = quota["used"].as_u64().unwrap();
@@ -258,8 +261,6 @@ fn main() {
         assert!(used + remaining == total);
         println!();
         println!("Drive {}", id);
-        println!("folders:{:>10}", folder_count);
-        println!("files:  {:>10} ({})", file_count, size_as_string(total_size));
         println!("total:  {:>18}", size_as_string(total));
         println!("free:   {:>18}", size_as_string(remaining));
         println!(
@@ -268,6 +269,9 @@ fn main() {
             used as f32 * 100.0 / total as f32,
             size_as_string(deleted)
         );
+        let (file_count, folder_count, size_map) = process_drive(&client, id, used);
+        println!("folders:{:>10}", folder_count);
+        println!("files:  {:>10}", file_count);
         for (size, sha_map) in size_map.iter().rev() {
             for names in sha_map.values() {
                 if names.len() > 1 {
