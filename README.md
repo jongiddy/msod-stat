@@ -5,18 +5,14 @@ Example run:
 
 ```
 $ cargo run < creds
-..................................................................................................................
-..................................................................................................................
-..................................................................................................................
-..................................................................................................................
-..................................................................................................................
-....................
+
 Drive 33939c2f5f6e
-folders:     10101
-files:      107696 (251.195 GiB)
 total:        1029.500 GiB
-free:          778.305 GiB
-used:          251.195 GiB = 24.40% (including 0.491 MiB pending deletion)
+free:          778.295 GiB
+used:          251.205 GiB = 24.40% (including 0.491 MiB pending deletion)
+folders:     10101
+files:      107700
+duplicates:
 1.198 GiB
 	Pictures/Family Photos/2015/110_FUJI/DSCF0104.MOV
 	Pictures/2015/110_FUJI/DSCF0104.MOV
@@ -43,4 +39,4 @@ To get a username/password for an app:
 8. Copy the password.
 9. Create a credentials file containing the username and password on separate lines.
 10. Pipe the credentials file into this command.
-    
+

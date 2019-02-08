@@ -132,48 +132,87 @@ impl<'a> Iterator for DriveSyncItemIterator<'a> {
     }
 }
 
-fn get_items(client: &reqwest::Client, drive_id: &str, used: u64) -> HashMap<String, Value> {
-    let mut id_map = HashMap::<String, Value>::new();
-    let bar = ProgressBar::new(used);
-    bar.set_style(ProgressStyle::default_bar()
-        .template("[{elapsed_precise}] {wide_bar} {percent}%")
-        .progress_chars("#>-"));
-    let mut total = 0u64;
-    for item in DriveSyncItemIterator::new(client, drive_id) {
+trait ProgressIndicator {
+    fn update(&self);
+
+    fn insert(&mut self, item: &Value);
+
+    fn delete(&mut self, prev: &Value);
+}
+
+struct IndicatifProgressBar {
+    bar: ProgressBar,
+    total: u64,
+}
+
+impl IndicatifProgressBar {
+
+    fn new(used: u64) -> IndicatifProgressBar {
+        let bar = ProgressBar::new(used);
+        bar.set_style(ProgressStyle::default_bar()
+            .template("Analyzing duplicates: [{elapsed_precise}] {wide_bar} {percent}%")
+            .progress_chars("#>-"));
         bar.tick();
+        IndicatifProgressBar {
+            bar,
+            total: 0u64,
+        }
+    }
+
+    fn close(self) {
+        self.bar.finish_and_clear();
+    }
+}
+
+impl ProgressIndicator for IndicatifProgressBar {
+    fn update(&self) {
+        self.bar.set_position(self.total);
+    }
+
+    fn insert(&mut self, item: &Value) {
+        if item.get("file").is_some() {
+            let size = item.get("size").unwrap().as_u64().unwrap();
+            self.total += size;
+        }
+    }
+
+    fn delete(&mut self, prev: &Value) {
+        if prev.get("file").is_some() {
+            let size = prev.get("size").unwrap().as_u64().unwrap();
+            assert!(size <= self.total);
+            self.total -= size;
+        }
+    }
+}
+
+fn get_items(client: &reqwest::Client, drive_id: &str, progress: &mut impl ProgressIndicator) -> HashMap<String, Value> {
+    let mut id_map = HashMap::<String, Value>::new();
+    progress.update();
+    for item in DriveSyncItemIterator::new(client, drive_id) {
         let id = item.get("id").unwrap().as_str().unwrap();
-        let size = item.get("size").unwrap().as_u64().unwrap();
         if item.get("deleted").is_some() {
             if let Some(prev) = id_map.remove(id) {
-                if prev.get("file").is_some() {
-                    total -= prev.get("size").unwrap().as_u64().unwrap();
-                    bar.set_position(total);
-                }
+                progress.delete(&prev);
             }
         }
         else {
-            if item.get("file").is_some() {
-                total += size;
-            }
+            progress.insert(&item);
             if let Some(prev) = id_map.insert(id.to_owned(), item) {
-                if prev.get("file").is_some() {
-                    total -= prev.get("size").unwrap().as_u64().unwrap();
-                }
+                progress.delete(&prev);
             }
-            bar.set_position(total);
         }
+        progress.update();
     }
-    bar.finish_and_clear();
     id_map
 }
 
-fn process_drive(client: &reqwest::Client, drive_id: &str, used: u64)
+fn process_drive(client: &reqwest::Client, drive_id: &str, progress: &mut impl ProgressIndicator)
     -> (u32, u32, BTreeMap<u64, HashMap<String, Vec<String>>>)
 {
     let mut size_map = BTreeMap::<u64, HashMap<String, Vec<String>>>::new();
     let mut file_count = 0;
     let mut folder_count = 0;
-    for item in get_items(client, drive_id, used).values() {
+    for item in get_items(client, drive_id, progress).values() {
         if let Some(file) = item.get("file") {
             file_count += 1;
             let size = item.get("size").unwrap().as_u64().unwrap();
@@ -269,9 +308,12 @@ fn main() {
             used as f32 * 100.0 / total as f32,
             size_as_string(deleted)
         );
-        let (file_count, folder_count, size_map) = process_drive(&client, id, used);
+        let mut progress = IndicatifProgressBar::new(used);
+        let (file_count, folder_count, size_map) = process_drive(&client, id, &mut progress);
+        progress.close();
         println!("folders:{:>10}", folder_count);
         println!("files:  {:>10}", file_count);
+        println!("duplicates:");
         for (size, sha_map) in size_map.iter().rev() {
             for names in sha_map.values() {
                 if names.len() > 1 {
