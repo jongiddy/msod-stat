@@ -217,15 +217,22 @@ fn process_drive(client: &reqwest::Client, drive_id: &str, progress: &mut impl P
             file_count += 1;
             let size = item.get("size").unwrap().as_u64().unwrap();
             if file.get("mimeType").unwrap().as_str().unwrap() != "application/msonenote" {
+                // Files with the "application/msonenote" MIME Type do not have a SHA
+                let basename = item.get("name").unwrap().as_str().unwrap();
+                let dirname = item.get("parentReference").unwrap()
+                    .get("path").unwrap().as_str().unwrap().trim_start_matches("/drive/root:/");
+                if basename.ends_with(".svn-base") && dirname.contains("/.svn/pristine/") {
+                    // SVN repo files may be duplicated in the .svn directory. Don't match these,
+                    // as they are part of the SVN repo format, and should not be modified
+                    // individually.
+                    continue;
+                }
+                let name = format!("{}/{}", dirname, basename);
                 let sha1 = file.get("hashes").unwrap().get("sha1Hash").unwrap().as_str().unwrap();
                 let sha_map = size_map.entry(size).or_insert_with(HashMap::<String, Vec<String>>::new);
                 // allocating the key only on insert is messy - we could use raw_entry here,
                 // or maybe entry_ref() will exist one day - for now, always allocate
-                let v = sha_map.entry(sha1.to_owned()).or_insert_with(Vec::new);
-                let basename = item.get("name").unwrap().as_str().unwrap();
-                let dirname = item.get("parentReference").unwrap()
-                    .get("path").unwrap().as_str().unwrap().trim_start_matches("/drive/root:/");
-                let name = format!("{}/{}", dirname, basename);
+                let v = sha_map.entry(sha1.to_owned()).or_insert_with(Vec::<String>::new);
                 v.push(name);
             }
         }
