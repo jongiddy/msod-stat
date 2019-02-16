@@ -88,7 +88,7 @@ impl DriveSyncItemIterator {
         let iter = DriveSyncItemIterator {
             receiver,
             items: json!([]),
-            item_index: 1,
+            item_index: 0,
         };
         iter
     }
@@ -98,25 +98,30 @@ impl Iterator for DriveSyncItemIterator {
     type Item = Value;
 
     fn next(&mut self) -> Option<Value> {
-        match self.item_index {
-            0 => None,
-            item_index => {
-                if item_index >= self.items.as_array().unwrap().len() {
+        match &self.items {
+            Value::Null => None,
+            Value::Array(vec) => {
+                let item_index = self.item_index + 1;
+                if item_index < vec.len() {
+                    self.item_index = item_index;
+                    self.items.get_mut(item_index).map(Value::take)
+                }
+                else {
                     match self.receiver.recv().unwrap() {
                         None => {
+                            self.items = Value::Null;
                             None
                         },
                         Some(items) => {
                             self.items = items;
-                            self.item_index = 1;
+                            self.item_index = 0;
                             self.items.get_mut(0).map(Value::take)
                         }
                     }
                 }
-                else {
-                    self.item_index = item_index + 1;
-                    self.items.get_mut(item_index).map(Value::take)
-                }
+            },
+            v => {
+                panic!("unexpected value: {:?}", v);
             }
         }
     }
