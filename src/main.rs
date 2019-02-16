@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, BufRead, Write};
+use std::sync::mpsc;
 use std::time::Duration;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::{header, StatusCode};
@@ -9,21 +10,6 @@ use oauth2::basic::BasicTokenType;
 
 mod auth;
 
-
-struct DriveSyncPageIterator<'a> {
-    client: &'a reqwest::Client,
-    next_link: Option<String>,
-}
-
-impl<'a> DriveSyncPageIterator<'a> {
-    fn new<'b>(client: &'b reqwest::Client, drive_id: &str) -> DriveSyncPageIterator<'b> {
-        let link = format!("https://graph.microsoft.com/v1.0/me/drives/{}/root/delta", drive_id);
-        DriveSyncPageIterator {
-            client: client,
-            next_link: Some(link),
-        }
-    }
-}
 
 fn get(client: &reqwest::Client, uri: &str) -> Result<String, reqwest::Error> {
     let mut retries = 3;
@@ -67,51 +53,56 @@ fn get(client: &reqwest::Client, uri: &str) -> Result<String, reqwest::Error> {
     }
 }
 
-impl<'a> Iterator for DriveSyncPageIterator<'a> {
-    type Item = Value;
-
-    fn next(&mut self) -> Option<Value> {
-        let next_link = std::mem::replace(&mut self.next_link, None);
-        match next_link {
-            None => {
-                None
-            },
-            Some(uri) => {
-                let result = get(self.client, &uri).unwrap();
-                let mut json: Value = serde_json::from_str(&result).unwrap();
-                self.next_link = json.get("@odata.nextLink").map(|v| v.as_str().unwrap().to_owned());
-                json.get_mut("value").map(Value::take)
+fn start_fetcher(client: reqwest::Client, drive_id: &str)
+    -> (std::thread::JoinHandle<reqwest::Client>, mpsc::Receiver<Option<Value>>)
+{
+    let mut link = format!("https://graph.microsoft.com/v1.0/me/drives/{}/root/delta", drive_id);
+    let (sender, receiver) = mpsc::channel::<Option<Value>>();
+    let t = std::thread::spawn(move || {
+        loop {
+            let result = get(&client, &link).unwrap();
+            let mut json: Value = serde_json::from_str(&result).unwrap();
+            sender.send(json.get_mut("value").map(Value::take)).unwrap();
+            match json.get("@odata.nextLink") {
+                Some(v) => {
+                    link = v.as_str().unwrap().to_owned();
+                },
+                None => {
+                    sender.send(None).unwrap();
+                    break client;
+                }
             }
         }
-    }
+    });
+    (t, receiver)
 }
 
-struct DriveSyncItemIterator<'a> {
-    page_iter: DriveSyncPageIterator<'a>,
+struct DriveSyncItemIterator {
+    receiver: mpsc::Receiver<Option<Value>>,
     items: Value,
     item_index: usize,
 }
 
-impl<'a> DriveSyncItemIterator<'a> {
-    fn new<'b>(client: &'b reqwest::Client, drive_id: &str) -> DriveSyncItemIterator<'b> {
-        DriveSyncItemIterator {
-            page_iter: DriveSyncPageIterator::new(client, drive_id),
+impl DriveSyncItemIterator {
+    fn new(receiver: mpsc::Receiver<Option<Value>>) -> DriveSyncItemIterator {
+        let iter = DriveSyncItemIterator {
+            receiver,
             items: json!([]),
             item_index: 1,
-        }
+        };
+        iter
     }
 }
 
-impl<'a> Iterator for DriveSyncItemIterator<'a> {
+impl Iterator for DriveSyncItemIterator {
     type Item = Value;
 
     fn next(&mut self) -> Option<Value> {
         match self.item_index {
             0 => None,
-            _ => {
-                if self.item_index >= self.items.as_array().unwrap().len() {
-                    let value = self.page_iter.next();
-                    match value {
+            item_index => {
+                if item_index >= self.items.as_array().unwrap().len() {
+                    match self.receiver.recv().unwrap() {
                         None => {
                             None
                         },
@@ -123,9 +114,8 @@ impl<'a> Iterator for DriveSyncItemIterator<'a> {
                     }
                 }
                 else {
-                    let val = self.items.get_mut(self.item_index).map(Value::take);
-                    self.item_index += 1;
-                    val
+                    self.item_index = item_index + 1;
+                    self.items.get_mut(item_index).map(Value::take)
                 }
             }
         }
@@ -185,10 +175,10 @@ impl ProgressIndicator for IndicatifProgressBar {
     }
 }
 
-fn get_items(client: &reqwest::Client, drive_id: &str, progress: &mut impl ProgressIndicator) -> HashMap<String, Value> {
+fn get_items(receiver: mpsc::Receiver<Option<Value>>, progress: &mut impl ProgressIndicator) -> HashMap<String, Value> {
     let mut id_map = HashMap::<String, Value>::new();
     progress.update();
-    for item in DriveSyncItemIterator::new(client, drive_id) {
+    for item in DriveSyncItemIterator::new(receiver) {
         let id = item.get("id").unwrap().as_str().unwrap();
         if item.get("deleted").is_some() {
             if let Some(prev) = id_map.remove(id) {
@@ -206,13 +196,13 @@ fn get_items(client: &reqwest::Client, drive_id: &str, progress: &mut impl Progr
     id_map
 }
 
-fn process_drive(client: &reqwest::Client, drive_id: &str, progress: &mut impl ProgressIndicator)
+fn process_drive(receiver: mpsc::Receiver<Option<Value>>, progress: &mut impl ProgressIndicator)
     -> (u32, u32, BTreeMap<u64, HashMap<String, Vec<String>>>)
 {
     let mut size_map = BTreeMap::<u64, HashMap<String, Vec<String>>>::new();
     let mut file_count = 0;
     let mut folder_count = 0;
-    for item in get_items(client, drive_id, progress).values() {
+    for item in get_items(receiver, progress).values() {
         if let Some(file) = item.get("file") {
             file_count += 1;
             let size = item.get("size").unwrap().as_u64().unwrap();
@@ -286,7 +276,7 @@ fn main() {
         }
     }
 
-    let client = reqwest::Client::builder()
+    let mut client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .default_headers(headers)
         .build().unwrap();
@@ -316,7 +306,8 @@ fn main() {
             size_as_string(deleted)
         );
         let mut progress = IndicatifProgressBar::new(used);
-        let (file_count, folder_count, size_map) = process_drive(&client, id, &mut progress);
+        let (thread, receiver) = start_fetcher(client, id);
+        let (file_count, folder_count, size_map) = process_drive(receiver, &mut progress);
         progress.close();
         println!("folders:{:>10}", folder_count);
         println!("files:  {:>10}", file_count);
@@ -331,6 +322,7 @@ fn main() {
                 }
             }
         }
+        client = thread.join().unwrap();
     }
 }
 
