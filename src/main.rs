@@ -95,27 +95,37 @@ impl DriveSyncItemIterator {
 }
 
 impl Iterator for DriveSyncItemIterator {
-    type Item = Value;
+    // Iterator to return each drive item in turn.  Since items are obtained using the sync call,
+    // the same item may occur multiple times, possibly with updated data.  If no value is ready
+    // after 1 second, the iterator returns Err(mpsc::RecvTimeoutError::Timeout) to allow the
+    // progress bar to be updated.
+    type Item = Result<Value, mpsc::RecvTimeoutError>;
 
-    fn next(&mut self) -> Option<Value> {
+    fn next(&mut self) -> Option<Result<Value, mpsc::RecvTimeoutError>> {
         match &self.items {
             Value::Null => None,
             Value::Array(vec) => {
                 let item_index = self.item_index + 1;
                 if item_index < vec.len() {
                     self.item_index = item_index;
-                    self.items.get_mut(item_index).map(Value::take)
+                    self.items.get_mut(item_index).map(Value::take).map(Ok)
                 }
                 else {
-                    match self.receiver.recv().unwrap() {
-                        None => {
+                    match self.receiver.recv_timeout(Duration::from_secs(1)) {
+                        Ok(None) => {
                             self.items = Value::Null;
                             None
-                        },
-                        Some(items) => {
+                        }
+                        Ok(Some(items)) => {
                             self.items = items;
                             self.item_index = 0;
-                            self.items.get_mut(0).map(Value::take)
+                            self.items.get_mut(0).map(Value::take).map(Ok)
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            Some(Err(mpsc::RecvTimeoutError::Timeout))
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            panic!("sender disconnected")
                         }
                     }
                 }
@@ -183,17 +193,19 @@ impl ProgressIndicator for IndicatifProgressBar {
 fn get_items(receiver: mpsc::Receiver<Option<Value>>, progress: &mut impl ProgressIndicator) -> HashMap<String, Value> {
     let mut id_map = HashMap::<String, Value>::new();
     progress.update();
-    for item in DriveSyncItemIterator::new(receiver) {
-        let id = item.get("id").unwrap().as_str().unwrap();
-        if item.get("deleted").is_some() {
-            if let Some(prev) = id_map.remove(id) {
-                progress.delete(&prev);
+    for result in DriveSyncItemIterator::new(receiver) {
+        if let Ok(item) = result {
+            let id = item.get("id").unwrap().as_str().unwrap();
+            if item.get("deleted").is_some() {
+                if let Some(prev) = id_map.remove(id) {
+                    progress.delete(&prev);
+                }
             }
-        }
-        else {
-            progress.insert(&item);
-            if let Some(prev) = id_map.insert(id.to_owned(), item) {
-                progress.delete(&prev);
+            else {
+                progress.insert(&item);
+                if let Some(prev) = id_map.insert(id.to_owned(), item) {
+                    progress.delete(&prev);
+                }
             }
         }
         progress.update();
