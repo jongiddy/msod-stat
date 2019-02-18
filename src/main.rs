@@ -196,16 +196,16 @@ fn get_items(receiver: mpsc::Receiver<Option<Value>>, progress: &mut impl Progre
     for result in DriveSyncItemIterator::new(receiver) {
         if let Ok(item) = result {
             let id = item.get("id").unwrap().as_str().unwrap();
-            if item.get("deleted").is_some() {
-                if let Some(prev) = id_map.remove(id) {
-                    progress.delete(&prev);
+            if let Some(prev) =
+                if item.get("deleted").is_some() {
+                    id_map.remove(id)
                 }
-            }
-            else {
-                progress.insert(&item);
-                if let Some(prev) = id_map.insert(id.to_owned(), item) {
-                    progress.delete(&prev);
+                else {
+                    progress.insert(&item);
+                    id_map.insert(id.to_owned(), item)
                 }
+            {
+                progress.delete(&prev);
             }
         }
         progress.update();
