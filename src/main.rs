@@ -176,14 +176,14 @@ impl ProgressIndicator for IndicatifProgressBar {
 
     fn insert(&mut self, item: &Value) {
         if item.get("file").is_some() {
-            let size = item.get("size").unwrap().as_u64().unwrap();
+            let size = item.get("size").and_then(Value::as_u64).unwrap_or(0);
             self.total += size;
         }
     }
 
     fn delete(&mut self, prev: &Value) {
         if prev.get("file").is_some() {
-            let size = prev.get("size").unwrap().as_u64().unwrap();
+            let size = prev.get("size").and_then(Value::as_u64).unwrap_or(0);
             assert!(size <= self.total);
             self.total -= size;
         }
@@ -195,7 +195,13 @@ fn get_items(receiver: mpsc::Receiver<Option<Value>>, progress: &mut impl Progre
     progress.update();
     for result in DriveSyncItemIterator::new(receiver) {
         if let Ok(item) = result {
-            let id = item.get("id").unwrap().as_str().unwrap();
+            let id = match item.get("id").and_then(Value::as_str) {
+                Some(id) => id,
+                None => {
+                    eprintln!("Ignoring item due to missing or invalid 'id': {:?}", item);
+                    continue;
+                }
+            };
             if let Some(prev) =
                 if item.get("deleted").is_some() {
                     id_map.remove(id)
@@ -214,23 +220,15 @@ fn get_items(receiver: mpsc::Receiver<Option<Value>>, progress: &mut impl Progre
 }
 
 fn ignore_file(file: &Value) -> bool {
-    if file.get("mimeType").unwrap().as_str().unwrap() == "application/msonenote" {
-        // Files with the "application/msonenote" MIME Type do not have a SHA
-        true
-    } else {
-        false
-    }
+    // Files with the "application/msonenote" MIME Type do not have a SHA
+    file.get("mimeType").and_then(Value::as_str).map_or(false, |s| s == "application/msonenote")
 }
 
 fn ignore_path(dirname: &str, basename: &str) -> bool {
-    if basename.ends_with(".svn-base") && dirname.contains("/.svn/pristine/") {
-        // SVN repo files may be duplicated in the .svn directory. Don't match these,
-        // as they are part of the SVN repo format, and should not be modified
-        // individually.
-        true
-    } else {
-        false
-    }
+    // SVN repo files may be duplicated in the .svn directory. Don't match these,
+    // as they are part of the SVN repo format, and should not be modified
+    // individually.
+    basename.ends_with(".svn-base") && dirname.contains("/.svn/pristine/")
 }
 
 fn process_drive(receiver: mpsc::Receiver<Option<Value>>, progress: &mut impl ProgressIndicator)
@@ -245,15 +243,42 @@ fn process_drive(receiver: mpsc::Receiver<Option<Value>>, progress: &mut impl Pr
             if ignore_file(&file) {
                 continue;
             }
-            let basename = item.get("name").unwrap().as_str().unwrap();
-            let dirname = item.get("parentReference").unwrap()
-                .get("path").unwrap().as_str().unwrap().trim_start_matches("/drive/root:/");
+            let basename = match item.get("name").and_then(Value::as_str) {
+                Some(name) => name,
+                None => {
+                    eprintln!("Ignoring item due to missing or invalid 'name': {:?}", item);
+                    continue;
+                }
+            };
+            let dirname = match item.get("parentReference")
+                    .and_then(|v| v.get("path"))
+                    .and_then(Value::as_str) {
+                Some(path) => path.trim_start_matches("/drive/root:/"),
+                None => {
+                    eprintln!("Ignoring item due to missing or invalid 'parentReference': {:?}", item);
+                    continue;
+                }
+            };
             if ignore_path(dirname, basename) {
                 continue;
             }
-            let size = item.get("size").unwrap().as_u64().unwrap();
+            let size = match item.get("size").and_then(Value::as_u64) {
+                Some(size) => size,
+                None => {
+                    eprintln!("Ignoring item due to missing or invalid 'size': {:?}", item);
+                    continue;
+                }
+            };
+            let sha1 = match file.get("hashes")
+                    .and_then(|v| v.get("sha1Hash"))
+                    .and_then(Value::as_str) {
+                Some(sha1) => sha1,
+                None => {
+                    eprintln!("Ignoring item due to missing or invalid 'sha1': {:?}", file);
+                    continue;
+                }
+            };
             let sha_map = size_map.entry(size).or_insert_with(HashMap::<String, Vec<String>>::new);
-            let sha1 = file.get("hashes").unwrap().get("sha1Hash").unwrap().as_str().unwrap();
             // allocating the key only on insert is messy - we could use raw_entry here,
             // or maybe entry_ref() will exist one day - for now, always allocate
             let v = sha_map.entry(sha1.to_owned()).or_insert_with(Vec::<String>::new);
@@ -264,7 +289,7 @@ fn process_drive(receiver: mpsc::Receiver<Option<Value>>, progress: &mut impl Pr
             folder_count += 1;
         }
         else {
-            println!("(ignoring {})", item["name"].as_str().unwrap());
+            eprintln!("Ignoring unrecognized item: {:?}", item);
         }
     }
     (file_count, folder_count, size_map)
