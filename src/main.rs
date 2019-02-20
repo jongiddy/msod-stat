@@ -2,7 +2,6 @@ use crate::id_item_map::{get_id_item_map, ProgressIndicator};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, BufRead};
 use std::time::Duration;
-use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::{header, StatusCode};
 use serde_json::Value;
 use oauth2::prelude::*;
@@ -12,20 +11,20 @@ mod auth;
 mod id_item_map;
 
 
-struct IndicatifProgressBar {
-    bar: ProgressBar,
+struct FetchDataProgressBar {
+    bar: indicatif::ProgressBar,
     total: u64,
 }
 
-impl IndicatifProgressBar {
+impl FetchDataProgressBar {
 
-    fn new(used: u64) -> IndicatifProgressBar {
-        let bar = ProgressBar::new(used);
-        bar.set_style(ProgressStyle::default_bar()
-            .template("Analyzing duplicates: [{elapsed_precise}] {wide_bar} {percent}%")
+    fn new(used: u64) -> FetchDataProgressBar {
+        let bar = indicatif::ProgressBar::new(used);
+        bar.set_style(indicatif::ProgressStyle::default_bar()
+            .template("Fetching drive data: [{elapsed_precise}] {wide_bar} {percent}%")
             .progress_chars("#>-"));
         bar.tick();
-        IndicatifProgressBar {
+        FetchDataProgressBar {
             bar,
             total: 0u64,
         }
@@ -36,7 +35,7 @@ impl IndicatifProgressBar {
     }
 }
 
-impl ProgressIndicator for IndicatifProgressBar {
+impl ProgressIndicator for FetchDataProgressBar {
     fn update(&self) {
         self.bar.set_position(self.total);
     }
@@ -75,7 +74,13 @@ fn process_drive(item_map: &HashMap<String, Value>)
     let mut size_map = BTreeMap::<u64, HashMap<String, Vec<String>>>::new();
     let mut file_count = 0;
     let mut folder_count = 0;
+    let bar = indicatif::ProgressBar::new(item_map.len() as u64);
+    bar.set_style(indicatif::ProgressStyle::default_bar()
+        .template("Analyzing duplicates: [{elapsed_precise}] {wide_bar} {percent}%")
+        .progress_chars("#>-"));
+    bar.tick();
     for item in item_map.values() {
+        bar.inc(1);
         if let Some(file) = item.get("file") {
             file_count += 1;
             if ignore_file(&file) {
@@ -130,6 +135,7 @@ fn process_drive(item_map: &HashMap<String, Value>)
             eprintln!("Ignoring unrecognized item: {:?}", item);
         }
     }
+    bar.finish_and_clear();
     (file_count, folder_count, size_map)
 }
 
@@ -202,7 +208,7 @@ fn main() {
             used as f32 * 100.0 / total as f32,
             size_as_string(deleted)
         );
-        let mut progress = IndicatifProgressBar::new(used);
+        let mut progress = FetchDataProgressBar::new(used);
         let item_map = get_id_item_map(&client, drive_id, &mut progress);
         progress.close();
         let (file_count, folder_count, size_map) = process_drive(&item_map);
