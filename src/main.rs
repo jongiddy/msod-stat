@@ -1,6 +1,5 @@
 use crate::id_item_map::{get_id_item_map, ProgressIndicator};
 use std::collections::{BTreeMap, HashMap};
-use std::io::{self, BufRead};
 use std::time::Duration;
 use reqwest::{header, StatusCode};
 use serde_json::Value;
@@ -10,6 +9,10 @@ use oauth2::basic::BasicTokenType;
 mod auth;
 mod id_item_map;
 
+// Making the OAuth2 client secret public is secure because PKCE ensures
+// that only the originator can use the authorization code.
+const CLIENT_ID: &str = "6612d641-e7d8-4d39-8dac-e6f21efe1bf4";
+const CLIENT_SECRET: &str = "ubnDYPYV4019]pentXO1~[=";
 
 struct FetchDataProgressBar {
     bar: indicatif::ProgressBar,
@@ -140,30 +143,7 @@ fn process_drive(item_map: &HashMap<String, Value>)
 }
 
 fn main() {
-    // See https://docs.microsoft.com/en-us/onedrive/developer/rest-api/getting-started/graph-oauth
-    // To get a username/password for an app:
-    // 1. Go to https://apps.dev.microsoft.com/
-    // 2. Click Add an App.
-    // 3. Skip the guided setup.
-    // 4. Set Web Redirect URL to http://localhost:3000/redirect
-    // 5. Add Delegated Permissions of Files.Read.All
-    // 6. Copy the Application Id as the username.
-    // 7. Click Generate New Password.
-    // 8. Copy the password.
-    // 9. Create a credentials file containing the username and password on separate lines.
-    // 10. Pipe the credentials file into this command.
-
-    let mut username = String::new();
-    let mut password = String::new();
-    let stdin = io::stdin();
-    {
-        let mut buf = stdin.lock();
-        buf.read_line(&mut username).unwrap();
-        buf.read_line(&mut password).unwrap();
-        username.pop();
-        password.pop();
-    }
-    let token = auth::authenticate(username, password).unwrap();
+    let token = auth::authenticate(CLIENT_ID.to_owned(), CLIENT_SECRET.to_owned()).unwrap();
     let mut headers = header::HeaderMap::new();
     match token.token_type() {
         BasicTokenType::Bearer => {
