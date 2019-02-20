@@ -57,11 +57,12 @@ fn get(client: &reqwest::Client, uri: &str) -> Result<String, reqwest::Error> {
     }
 }
 
-pub fn start_fetcher(client: reqwest::Client, drive_id: &str)
-    -> (std::thread::JoinHandle<reqwest::Client>, mpsc::Receiver<Option<Value>>)
+pub fn start_fetcher(client: &reqwest::Client, drive_id: &str)
+    -> (std::thread::JoinHandle<()>, mpsc::Receiver<Option<Value>>)
 {
     let mut link = format!("https://graph.microsoft.com/v1.0/me/drives/{}/root/delta", drive_id);
     let (sender, receiver) = mpsc::channel::<Option<Value>>();
+    let client = client.clone();
     let t = std::thread::spawn(move || {
         loop {
             let result = get(&client, &link).unwrap();
@@ -73,7 +74,7 @@ pub fn start_fetcher(client: reqwest::Client, drive_id: &str)
                 },
                 None => {
                     sender.send(None).unwrap();
-                    break client;
+                    break;
                 }
             }
         }
@@ -168,4 +169,13 @@ pub fn get_items(receiver: mpsc::Receiver<Option<Value>>, progress: &mut impl Pr
         progress.update();
     }
     id_map
+}
+
+pub fn get_id_item_map(client: &reqwest::Client, drive_id: &str, progress: &mut impl ProgressIndicator)
+    -> HashMap<String, Value>
+{
+        let (thread, receiver) = start_fetcher(client, drive_id);
+        let id_map = get_items(receiver, progress);
+        thread.join().unwrap();
+        id_map
 }

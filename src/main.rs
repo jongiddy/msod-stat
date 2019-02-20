@@ -1,7 +1,6 @@
-use crate::id_item_map::{get_items, start_fetcher, ProgressIndicator};
+use crate::id_item_map::{get_id_item_map, ProgressIndicator};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, BufRead};
-use std::sync::mpsc;
 use std::time::Duration;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::{header, StatusCode};
@@ -70,13 +69,13 @@ fn ignore_path(dirname: &str, basename: &str) -> bool {
     basename.ends_with(".svn-base") && dirname.contains("/.svn/pristine/")
 }
 
-fn process_drive(receiver: mpsc::Receiver<Option<Value>>, progress: &mut impl ProgressIndicator)
+fn process_drive(item_map: &HashMap<String, Value>)
     -> (u32, u32, BTreeMap<u64, HashMap<String, Vec<String>>>)
 {
     let mut size_map = BTreeMap::<u64, HashMap<String, Vec<String>>>::new();
     let mut file_count = 0;
     let mut folder_count = 0;
-    for item in get_items(receiver, progress).values() {
+    for item in item_map.values() {
         if let Some(file) = item.get("file") {
             file_count += 1;
             if ignore_file(&file) {
@@ -174,7 +173,7 @@ fn main() {
         }
     }
 
-    let mut client = reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .default_headers(headers)
         .build().unwrap();
@@ -186,7 +185,7 @@ fn main() {
     let result = response.text().unwrap();
     let json: Value = serde_json::from_str(&result).unwrap();
     for drive in json["value"].as_array().unwrap() {
-        let id = drive["id"].as_str().unwrap();
+        let drive_id = drive["id"].as_str().unwrap();
         let quota = &drive["quota"];
         let total = quota["total"].as_u64().unwrap();
         let used = quota["used"].as_u64().unwrap();
@@ -194,7 +193,7 @@ fn main() {
         let remaining = quota["remaining"].as_u64().unwrap();
         assert!(used + remaining == total);
         println!();
-        println!("Drive {}", id);
+        println!("Drive {}", drive_id);
         println!("total:  {:>18}", size_as_string(total));
         println!("free:   {:>18}", size_as_string(remaining));
         println!(
@@ -204,9 +203,9 @@ fn main() {
             size_as_string(deleted)
         );
         let mut progress = IndicatifProgressBar::new(used);
-        let (thread, receiver) = start_fetcher(client, id);
-        let (file_count, folder_count, size_map) = process_drive(receiver, &mut progress);
+        let item_map = get_id_item_map(&client, drive_id, &mut progress);
         progress.close();
+        let (file_count, folder_count, size_map) = process_drive(&item_map);
         println!("folders:{:>10}", folder_count);
         println!("files:  {:>10}", file_count);
         println!("duplicates:");
@@ -220,7 +219,6 @@ fn main() {
                 }
             }
         }
-        client = thread.join().unwrap();
     }
 }
 
