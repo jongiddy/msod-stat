@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use failure::Fail;
 use string_error;
 use oauth2::prelude::*;
 use oauth2::{
@@ -16,13 +17,14 @@ use oauth2::{
     Scope,
     TokenUrl
 };
-use oauth2::basic::{BasicClient, BasicTokenResponse, BasicRequestTokenError};
+use oauth2::basic::{BasicClient, BasicTokenResponse};
 use open;
 use rand::{thread_rng, Rng};
-use tiny_http::{Server, Response, Method, StatusCode};
+use tiny_http::{Server, Request, Response, Method, StatusCode};
 use url::Url;
 
-fn extract_authorization_code(url: &Url, csrf_token: &CsrfToken) -> Option<String> {
+
+fn extract_authorization_code(url: &Url, csrf_token: &CsrfToken) -> Result<String, Box<Error>> {
     // Looking for
     // /redirect?code=Mac..dc6&state=DL7jz5YIW4WusaYdDZrXzA%3d%3d
     let mut received_code = None;
@@ -31,71 +33,93 @@ fn extract_authorization_code(url: &Url, csrf_token: &CsrfToken) -> Option<Strin
         match pair.0.as_ref() {
             "code" => {
                 if received_code.is_some() {
-                    println!("Duplicate code");
-                    return None;
+                    return Err(string_error::static_err("Duplicate code"));
                 }
                 received_code = Some(pair.1.into_owned());
             },
             "state" => {
                 if received_state.is_some() {
-                    println!("Duplicate state");
-                    return None;
+                    return Err(string_error::static_err("Duplicate state"));
                 }
                 received_state = Some(pair.1);
             },
             parameter => {
-                println!("Unexpected parameter: {}", parameter);
-                return None;
+                return Err(string_error::into_err(format!("Unexpected parameter: {}", parameter)));
             }
         }
     }
-    if received_state.as_ref().unwrap() != csrf_token.secret() {
-        println!("CSRF token mismatch");
-        return None;
+    match received_state {
+        None => {
+            return Err(string_error::static_err("No CSRF token received"));
+        }
+        Some(state) => {
+            if state.as_ref() != csrf_token.secret() {
+                return Err(string_error::static_err("CSRF token mismatch"));
+            }
+        }
     }
-    if received_code.is_none() {
-        println!("No authorization code received");
+    match received_code {
+        None => {
+            Err(string_error::static_err("No authorization code received"))
+        }
+        Some(code) => {
+            Ok(code)
+        }
     }
-    return received_code;
+}
+
+fn handle_request(request: Request, csrf_token: &CsrfToken) -> Result<String, Box<Error>> {
+    let err = match request.method() {
+        Method::Get => {
+            let base = Url::parse("http://localhost:3003/")?;
+            let url = base.join(request.url())?;
+            if url.path() == "/redirect" {
+                match extract_authorization_code(&url, &csrf_token) {
+                    Ok(code) => {
+                        let response = Response::from_string("You may now close this window.");
+                        if let Err(respond_err) = request.respond(response) {
+                            eprintln!("Error sending HTTP response: {}", respond_err);
+                        }
+                        return Ok(code)
+                    }
+                    Err(err) => {
+                        err
+                    }
+                }
+            }
+            else {
+                string_error::into_err(format!("Unrecognized path: {}", request.url()))
+            }
+        }
+        _ => {
+            string_error::into_err(format!("Unsupported method: {}", request.method()))
+        }
+    };
+    let status_code = StatusCode(404);
+    let response = Response::from_string(status_code.default_reason_phrase())
+        .with_status_code(status_code);
+    if let Err(respond_err) = request.respond(response) {
+        eprintln!("Error sending HTTP response: {}", respond_err);
+    }
+    Err(err)
 }
 
 fn get_authorization_code(
     server: &Server,
     csrf_token: CsrfToken,
-) -> Result<String, io::Error> {
-
+) -> Result<String, Box<Error>> {
     for request in server.incoming_requests() {
-        let status_code = match request.method() {
-            Method::Get => {
-                let base = Url::parse("http://localhost:3003/").unwrap();
-                let url = base.join(request.url()).unwrap();
-                if url.path() == "/redirect" {
-                    match extract_authorization_code(&url, &csrf_token) {
-                        None => StatusCode(404),
-                        Some(code) => {
-                            let response = Response::from_string("You may now close this window.");
-                            request.respond(response)?;
-                            return Ok(code)
-                        }
-                    }
-                }
-                else {
-                    println!("Unrecognized path: {}", request.url());
-                    StatusCode(404)
-                }
-            },
-            _ => {
-                println!("Unsupported method: {}", request.method());
-                StatusCode(404)
+        match handle_request(request, &csrf_token) {
+            Ok(code) => {
+                return Ok(code);
             }
-        };
-
-        let response = Response::from_string(status_code.default_reason_phrase())
-            .with_status_code(status_code);
-        request.respond(response)?;
+            Err(err) => {
+                eprintln!("Error handling HTTP request: {}", err);
+            }
+        }
     }
 
-    panic!("No more incoming connections and auth code not supplied")
+    Err(string_error::static_err("No more incoming connections and auth code not supplied"))
 }
 
 fn start_server() -> Result<Server, Box<dyn Error>> {
@@ -133,18 +157,18 @@ fn start_server() -> Result<Server, Box<dyn Error>> {
 }
 
 pub fn authenticate(client_id: String, client_secret: String)
-    -> Result<BasicTokenResponse, BasicRequestTokenError>
+    -> Result<BasicTokenResponse, Box<Error>>
 {
     let ms_graph_authorize_url = AuthUrl::new(
-        Url::parse("https://login.microsoftonline.com/common/oauth2/v2.0/authorize").unwrap()
+        Url::parse("https://login.microsoftonline.com/common/oauth2/v2.0/authorize")?
     );
     let ms_graph_token_url = Some(
         TokenUrl::new(
-            Url::parse("https://login.microsoftonline.com/common/oauth2/v2.0/token").unwrap()
+            Url::parse("https://login.microsoftonline.com/common/oauth2/v2.0/token")?
         )
     );
 
-    let server = start_server().unwrap();
+    let server = start_server()?;
     let redirect_url = format!("http://localhost:{}/redirect", server.server_addr().port());
 
     let client =
@@ -156,7 +180,7 @@ pub fn authenticate(client_id: String, client_secret: String)
         )
         .set_auth_type(AuthType::RequestBody)
         .add_scope(Scope::new("Files.Read.All".to_string()))
-        .set_redirect_url(RedirectUrl::new(Url::parse(&redirect_url).unwrap()));
+        .set_redirect_url(RedirectUrl::new(Url::parse(&redirect_url)?));
 
     // Setup PKCE code challenge
     let code_verifier = PkceCodeVerifierS256::new_random();
@@ -173,7 +197,7 @@ pub fn authenticate(client_id: String, client_secret: String)
         println!("Browse to {}", auth_url);
     }
 
-    let authorization_code = get_authorization_code(&server, csrf_token).unwrap();
+    let authorization_code = get_authorization_code(&server, csrf_token)?;
 
     // close down server
     drop(server);
@@ -181,5 +205,6 @@ pub fn authenticate(client_id: String, client_secret: String)
     // Send the PKCE code verifier in the token request
     let params: Vec<(&str, &str)> = vec![("code_verifier", &code_verifier.secret())];
 
-    client.exchange_code_extension(AuthorizationCode::new(authorization_code), &params)
+    Ok(client.exchange_code_extension(AuthorizationCode::new(authorization_code), &params)
+        .map_err(|failure| failure.compat())?)
 }
