@@ -24,7 +24,9 @@ use tiny_http::{Server, Request, Response, Method, StatusCode};
 use url::Url;
 
 
-fn extract_authorization_code(url: &Url, csrf_token: &CsrfToken) -> Result<String, Box<Error>> {
+fn extract_authorization_code<'a>(url: &'a Url, csrf_token: &CsrfToken)
+    -> Result<std::borrow::Cow<'a, str>, Box<Error>>
+{
     // Looking for
     // /redirect?code=Mac..dc6&state=DL7jz5YIW4WusaYdDZrXzA%3d%3d
     let mut received_code = None;
@@ -35,7 +37,7 @@ fn extract_authorization_code(url: &Url, csrf_token: &CsrfToken) -> Result<Strin
                 if received_code.is_some() {
                     return Err(string_error::static_err("Duplicate code"));
                 }
-                received_code = Some(pair.1.into_owned());
+                received_code = Some(pair.1);
             },
             "state" => {
                 if received_state.is_some() {
@@ -80,7 +82,7 @@ fn handle_request(request: Request, csrf_token: &CsrfToken) -> Result<String, Bo
                         if let Err(respond_err) = request.respond(response) {
                             eprintln!("Error sending HTTP response: {}", respond_err);
                         }
-                        return Ok(code)
+                        return Ok(code.into_owned())
                     }
                     Err(err) => {
                         err
