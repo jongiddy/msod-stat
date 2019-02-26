@@ -1,4 +1,4 @@
-use crate::id_item_map::{get_id_item_map, ProgressIndicator};
+use crate::id_item_map::{sync_drive_items, DriveItemHandler};
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 use reqwest::{header, StatusCode};
@@ -14,33 +14,25 @@ mod id_item_map;
 const CLIENT_ID: &str = "6612d641-e7d8-4d39-8dac-e6f21efe1bf4";
 const CLIENT_SECRET: &str = "ubnDYPYV4019]pentXO1~[=";
 
-struct FetchDataProgressBar {
+struct ValueHandler {
+    id_map: HashMap<String, Value>,
     bar: indicatif::ProgressBar,
     total: u64,
 }
 
-impl FetchDataProgressBar {
+impl ValueHandler {
 
-    fn new(used: u64) -> FetchDataProgressBar {
+    fn new(used: u64) -> ValueHandler {
         let bar = indicatif::ProgressBar::new(used);
         bar.set_style(indicatif::ProgressStyle::default_bar()
             .template("Fetching drive data: [{elapsed_precise}] {wide_bar} {percent}%")
             .progress_chars("#>-"));
         bar.tick();
-        FetchDataProgressBar {
+        ValueHandler {
+            id_map: HashMap::new(),
             bar,
             total: 0u64,
         }
-    }
-
-    fn close(self) {
-        self.bar.finish_and_clear();
-    }
-}
-
-impl ProgressIndicator for FetchDataProgressBar {
-    fn update(&self) {
-        self.bar.set_position(self.total);
     }
 
     fn insert(&mut self, item: &Value) {
@@ -57,6 +49,38 @@ impl ProgressIndicator for FetchDataProgressBar {
             self.total -= size;
         }
     }
+
+    fn close(&self) {
+        self.bar.finish_and_clear();
+    }
+}
+
+impl DriveItemHandler<Value> for ValueHandler {
+    fn tick(&self) {
+        self.bar.tick();
+    }
+
+    fn handle(&mut self, item: Value) {
+        let id = match item.get("id").and_then(Value::as_str) {
+            Some(id) => id,
+            None => {
+                eprintln!("Ignoring item due to missing or invalid 'id': {:?}", item);
+                return;
+            }
+        };
+        if let Some(prev) =
+            if item.get("deleted").is_some() {
+                self.id_map.remove(id)
+            }
+            else {
+                self.insert(&item);
+                self.id_map.insert(id.to_owned(), item)
+            }
+        {
+            self.delete(&prev);
+        }
+        self.bar.set_position(self.total);
+    }
 }
 
 fn ignore_file(file: &Value) -> bool {
@@ -71,7 +95,7 @@ fn ignore_path(dirname: &str, basename: &str) -> bool {
     basename.ends_with(".svn-base") && dirname.contains("/.svn/pristine/")
 }
 
-fn process_drive(item_map: &HashMap<String, Value>)
+fn analyze_items(item_map: &HashMap<String, Value>)
     -> (u32, u32, BTreeMap<u64, HashMap<String, Vec<String>>>)
 {
     let mut size_map = BTreeMap::<u64, HashMap<String, Vec<String>>>::new();
@@ -188,10 +212,11 @@ fn main() {
             used as f32 * 100.0 / total as f32,
             size_as_string(deleted)
         );
-        let mut progress = FetchDataProgressBar::new(used);
-        let item_map = get_id_item_map(&client, drive_id, &mut progress);
-        progress.close();
-        let (file_count, folder_count, size_map) = process_drive(&item_map);
+        let mut handler = ValueHandler::new(used);
+        sync_drive_items(&client, drive_id, &mut handler).unwrap();
+        handler.close();
+        let item_map = handler.id_map;
+        let (file_count, folder_count, size_map) = analyze_items(&item_map);
         println!("folders:{:>10}", folder_count);
         println!("files:  {:>10}", file_count);
         println!("duplicates:");
