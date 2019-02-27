@@ -16,15 +16,20 @@ const CLIENT_ID: &str = "6612d641-e7d8-4d39-8dac-e6f21efe1bf4";
 const CLIENT_SECRET: &str = "ubnDYPYV4019]pentXO1~[=";
 
 #[derive(Debug, Deserialize)]
+struct Exists {
+    // empty struct to avoid deserializing contents of JSON object
+}
+
+#[derive(Debug, Deserialize)]
 struct Item {
     id: String,
     name: String,
     #[serde(rename = "parentReference")]
     parent: Option<Value>,
     file: Option<Value>,
-    folder: Option<Value>,
-    package: Option<Value>,
-    deleted: Option<Value>,
+    folder: Option<Exists>,
+    package: Option<Exists>,
+    deleted: Option<Exists>,
     size: u64,
 }
 
@@ -240,4 +245,107 @@ fn size_as_string(value: u64) -> String {
         }
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use super::Item;
+
+    #[test]
+    fn json_file() {
+        let data = json!({
+            "id": "ID",
+            "name": "NAME",
+            "size": 8192,
+            "file": {
+                "hashes": {
+                    "quickXorHash": "ZBIxs/4bmb5QuzTKkGJbU+7IsfM=",
+                    "sha1Hash": "9784E164A3626978D838EE21A0319C0DFB39001B"
+                },
+                "mimeType": "image/jpeg"
+            },
+        }).to_string();
+        let item: Item = serde_json::from_str(&data).unwrap();
+        assert_eq!(item.id, "ID");
+        assert_eq!(item.name, "NAME");
+        assert_eq!(item.size, 8192);
+        assert!(item.file.is_some());
+        assert!(item.folder.is_none());
+        assert!(item.package.is_none());
+        assert!(item.deleted.is_none());
+    }
+
+    #[test]
+    fn json_package() {
+        let data = json!({
+            "id": "ID",
+            "name": "NAME",
+            "size": 8192,
+            "package": {
+                "view": {
+                    "sortBy": "takenOrCreatedDateTime",
+                    "sortOrder": "descending",
+                    "viewType": "thumbnails"
+                }
+            }
+        }).to_string();
+        let item: Item = serde_json::from_str(&data).unwrap();
+        assert_eq!(item.id, "ID");
+        assert_eq!(item.name, "NAME");
+        assert_eq!(item.size, 8192);
+        assert!(item.file.is_none());
+        assert!(item.folder.is_none());
+        assert!(item.package.is_some());
+        assert!(item.deleted.is_none());
+    }
+
+    #[test]
+    fn json_folder() {
+        let data = json!({
+            "id": "ID",
+            "name": "NAME",
+            "size": 8192,
+            "folder": {
+                "view": {
+                    "sortBy": "takenOrCreatedDateTime",
+                    "sortOrder": "descending",
+                    "viewType": "thumbnails"
+                }
+            }
+        }).to_string();
+        let item: Item = serde_json::from_str(&data).unwrap();
+        assert_eq!(item.id, "ID");
+        assert_eq!(item.name, "NAME");
+        assert_eq!(item.size, 8192);
+        assert!(item.file.is_none());
+        assert!(item.folder.is_some());
+        assert!(item.package.is_none());
+        assert!(item.deleted.is_none());
+    }
+
+    #[test]
+    fn json_deleted() {
+        let data = json!({
+            "id": "ID",
+            "name": "NAME",
+            "size": 8192,
+            "file": {
+                "hashes": {
+                    "quickXorHash": "ZBIxs/4bmb5QuzTKkGJbU+7IsfM=",
+                    "sha1Hash": "9784E164A3626978D838EE21A0319C0DFB39001B"
+                },
+                "mimeType": "image/jpeg"
+            },
+            "deleted": {}
+        }).to_string();
+        let item: Item = serde_json::from_str(&data).unwrap();
+        assert_eq!(item.id, "ID");
+        assert_eq!(item.name, "NAME");
+        assert_eq!(item.size, 8192);
+        assert!(item.file.is_some());
+        assert!(item.folder.is_none());
+        assert!(item.package.is_none());
+        assert!(item.deleted.is_some());
+    }
 }
