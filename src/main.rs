@@ -20,17 +20,34 @@ struct Exists {
     // empty struct to avoid deserializing contents of JSON object
 }
 
+#[derive(Debug, Deserialize, PartialEq)]
+enum ItemType {
+    #[serde(rename = "file")]
+    File {
+        // Never seen a file without a mimeType, but the existence of the `processingMetadata`
+        // attribute at https://docs.microsoft.com/en-us/onedrive/developer/rest-api/resources/file
+        // suggests that it might happen
+        #[serde(rename = "mimeType")]
+        mime_type: Option<String>,
+        // OneNote files do not have hashes
+        hashes: Option<Value>
+    },
+    #[serde(rename = "folder")]
+    Folder {},
+    #[serde(rename = "package")]
+    Package {},
+}
+
 #[derive(Debug, Deserialize)]
 struct Item {
     id: String,
     name: String,
+    size: u64,
     #[serde(rename = "parentReference")]
     parent: Option<Value>,
-    file: Option<Value>,
-    folder: Option<Exists>,
-    package: Option<Exists>,
+    #[serde(flatten)]
+    item_type: ItemType,
     deleted: Option<Exists>,
-    size: u64,
 }
 
 struct ItemHandler {
@@ -55,13 +72,13 @@ impl ItemHandler {
     }
 
     fn insert(&mut self, item: &Item) {
-        if item.file.is_some() {
+        if let ItemType::File {..} = item.item_type {
             self.total += item.size;
         }
     }
 
     fn delete(&mut self, prev: &Item) {
-        if prev.file.is_some() {
+        if let ItemType::File {..} = prev.item_type {
             let size = prev.size;
             assert!(size <= self.total);
             self.total -= size;
@@ -94,9 +111,9 @@ impl DriveItemHandler<Item> for ItemHandler {
     }
 }
 
-fn ignore_file(file: &Value) -> bool {
+fn ignore_file(mime_type: &Option<String>) -> bool {
     // Files with the "application/msonenote" MIME Type do not have a SHA
-    file.get("mimeType").and_then(Value::as_str).map_or(false, |s| s == "application/msonenote")
+    mime_type.as_ref().map_or(false, |s| s == "application/msonenote")
 }
 
 fn ignore_path(dirname: &str, basename: &str) -> bool {
@@ -119,44 +136,41 @@ fn analyze_items(item_map: &HashMap<String, Item>)
     bar.tick();
     for item in item_map.values() {
         bar.inc(1);
-        if let Some(file) = &item.file {
-            file_count += 1;
-            if ignore_file(&file) {
-                continue;
-            }
-            let dirname = match item.parent.as_ref()
-                    .and_then(|v| v.get("path"))
-                    .and_then(Value::as_str) {
-                Some(path) => path.trim_start_matches("/drive/root:/"),
-                None => {
-                    eprintln!("Ignoring item due to missing or invalid 'parentReference': {:?}", item);
+        match &item.item_type {
+            ItemType::File { mime_type, hashes } => {
+                file_count += 1;
+                if ignore_file(&mime_type) {
                     continue;
                 }
-            };
-            if ignore_path(dirname, &item.name) {
-                continue;
-            }
-            let sha1 = match file.get("hashes")
-                    .and_then(|v| v.get("sha1Hash"))
-                    .and_then(Value::as_str) {
-                Some(sha1) => sha1,
-                None => {
-                    eprintln!("Ignoring item due to missing or invalid 'sha1': {:?}", file);
+                let dirname = match item.parent.as_ref()
+                        .and_then(|v| v.get("path"))
+                        .and_then(Value::as_str) {
+                    Some(path) => path.trim_start_matches("/drive/root:/"),
+                    None => {
+                        eprintln!("Ignoring item due to missing or invalid 'parentReference': {:?}", item);
+                        continue;
+                    }
+                };
+                if ignore_path(dirname, &item.name) {
                     continue;
                 }
-            };
-            let sha_map = size_map.entry(item.size).or_insert_with(HashMap::<String, Vec<String>>::new);
-            // allocating the key only on insert is messy - we could use raw_entry here,
-            // or maybe entry_ref() will exist one day - for now, always allocate
-            let v = sha_map.entry(sha1.to_owned()).or_insert_with(Vec::<String>::new);
-            let name = format!("{}/{}", dirname, item.name);
-            v.push(name);
-        }
-        else if item.folder.is_some() || item.package.is_some() {
-            folder_count += 1;
-        }
-        else {
-            eprintln!("Ignoring unrecognized item: {:?}", item);
+                let sha1 = match hashes.as_ref().and_then(|v| v.get("sha1Hash")).and_then(Value::as_str) {
+                    Some(sha1) => sha1,
+                    None => {
+                        eprintln!("Ignoring item due to missing or invalid 'sha1': {:?}", hashes);
+                        continue;
+                    }
+                };
+                let sha_map = size_map.entry(item.size).or_insert_with(HashMap::<String, Vec<String>>::new);
+                // allocating the key only on insert is messy - we could use raw_entry here,
+                // or maybe entry_ref() will exist one day - for now, always allocate
+                let v = sha_map.entry(sha1.to_owned()).or_insert_with(Vec::<String>::new);
+                let name = format!("{}/{}", dirname, item.name);
+                v.push(name);
+            }
+            ItemType::Folder {} | ItemType::Package {} => {
+                folder_count += 1;
+            }
         }
     }
     bar.finish_and_clear();
@@ -250,7 +264,7 @@ fn size_as_string(value: u64) -> String {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use super::Item;
+    use super::{Item, ItemType};
 
     #[test]
     fn json_file() {
@@ -270,9 +284,14 @@ mod tests {
         assert_eq!(item.id, "ID");
         assert_eq!(item.name, "NAME");
         assert_eq!(item.size, 8192);
-        assert!(item.file.is_some());
-        assert!(item.folder.is_none());
-        assert!(item.package.is_none());
+        match item.item_type {
+            ItemType::File{ mime_type, .. } => {
+                assert_eq!(mime_type, Some("image/jpeg".to_owned()));
+            }
+            _ => {
+                panic!("Not a file!");
+            }
+        }
         assert!(item.deleted.is_none());
     }
 
@@ -294,9 +313,7 @@ mod tests {
         assert_eq!(item.id, "ID");
         assert_eq!(item.name, "NAME");
         assert_eq!(item.size, 8192);
-        assert!(item.file.is_none());
-        assert!(item.folder.is_none());
-        assert!(item.package.is_some());
+        assert_eq!(item.item_type, ItemType::Package {});
         assert!(item.deleted.is_none());
     }
 
@@ -318,9 +335,7 @@ mod tests {
         assert_eq!(item.id, "ID");
         assert_eq!(item.name, "NAME");
         assert_eq!(item.size, 8192);
-        assert!(item.file.is_none());
-        assert!(item.folder.is_some());
-        assert!(item.package.is_none());
+        assert_eq!(item.item_type, ItemType::Folder {});
         assert!(item.deleted.is_none());
     }
 
@@ -343,9 +358,14 @@ mod tests {
         assert_eq!(item.id, "ID");
         assert_eq!(item.name, "NAME");
         assert_eq!(item.size, 8192);
-        assert!(item.file.is_some());
-        assert!(item.folder.is_none());
-        assert!(item.package.is_none());
+        match item.item_type {
+            ItemType::File{ mime_type, .. } => {
+                assert_eq!(mime_type, Some("image/jpeg".to_owned()));
+            }
+            _ => {
+                panic!("Not a file!");
+            }
+        }
         assert!(item.deleted.is_some());
     }
 }

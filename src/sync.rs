@@ -99,7 +99,14 @@ where DriveItem: serde::de::DeserializeOwned
 {
     loop {
         let result = get(&client, &link);
-        let page: SyncPage<DriveItem> = serde_json::from_str(&result).unwrap();
+        let page: SyncPage<DriveItem> = match serde_json::from_str(&result) {
+            Ok(page) => page,
+            Err(error) => {
+                eprintln!("{}", result);
+                eprintln!("{}", error);
+                panic!("Could not deserialize sync page")
+            }
+        };
         for value in page.value.into_iter() {
             sender.send(value).unwrap();
         }
