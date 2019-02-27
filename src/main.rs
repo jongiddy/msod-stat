@@ -1,4 +1,7 @@
-use crate::id_item_map::{sync_drive_items, DriveItemHandler};
+mod auth;
+mod sync;
+
+use crate::sync::{sync_drive_items, DriveItemHandler};
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 use reqwest::{header, StatusCode};
@@ -6,9 +9,6 @@ use serde_derive::Deserialize;
 use serde_json::Value;
 use oauth2::prelude::*;
 use oauth2::basic::BasicTokenType;
-
-mod auth;
-mod id_item_map;
 
 // Making the OAuth2 client secret public is secure because PKCE ensures
 // that only the originator can use the authorization code.
