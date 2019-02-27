@@ -2,6 +2,7 @@ use crate::id_item_map::{sync_drive_items, DriveItemHandler};
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 use reqwest::{header, StatusCode};
+use serde_derive::Deserialize;
 use serde_json::Value;
 use oauth2::prelude::*;
 use oauth2::basic::BasicTokenType;
@@ -14,37 +15,49 @@ mod id_item_map;
 const CLIENT_ID: &str = "6612d641-e7d8-4d39-8dac-e6f21efe1bf4";
 const CLIENT_SECRET: &str = "ubnDYPYV4019]pentXO1~[=";
 
-struct ValueHandler {
-    id_map: HashMap<String, Value>,
+#[derive(Debug, Deserialize)]
+struct Item {
+    id: String,
+    name: String,
+    #[serde(rename = "parentReference")]
+    parent: Option<Value>,
+    file: Option<Value>,
+    folder: Option<Value>,
+    package: Option<Value>,
+    deleted: Option<Value>,
+    size: u64,
+}
+
+struct ItemHandler {
+    id_map: HashMap<String, Item>,
     bar: indicatif::ProgressBar,
     total: u64,
 }
 
-impl ValueHandler {
+impl ItemHandler {
 
-    fn new(used: u64) -> ValueHandler {
+    fn new(used: u64) -> ItemHandler {
         let bar = indicatif::ProgressBar::new(used);
         bar.set_style(indicatif::ProgressStyle::default_bar()
             .template("Fetching drive data: [{elapsed_precise}] {wide_bar} {percent}%")
             .progress_chars("#>-"));
         bar.tick();
-        ValueHandler {
+        ItemHandler {
             id_map: HashMap::new(),
             bar,
             total: 0u64,
         }
     }
 
-    fn insert(&mut self, item: &Value) {
-        if item.get("file").is_some() {
-            let size = item.get("size").and_then(Value::as_u64).unwrap_or(0);
-            self.total += size;
+    fn insert(&mut self, item: &Item) {
+        if item.file.is_some() {
+            self.total += item.size;
         }
     }
 
-    fn delete(&mut self, prev: &Value) {
-        if prev.get("file").is_some() {
-            let size = prev.get("size").and_then(Value::as_u64).unwrap_or(0);
+    fn delete(&mut self, prev: &Item) {
+        if prev.file.is_some() {
+            let size = prev.size;
             assert!(size <= self.total);
             self.total -= size;
         }
@@ -55,26 +68,19 @@ impl ValueHandler {
     }
 }
 
-impl DriveItemHandler<Value> for ValueHandler {
+impl DriveItemHandler<Item> for ItemHandler {
     fn tick(&self) {
         self.bar.tick();
     }
 
-    fn handle(&mut self, item: Value) {
-        let id = match item.get("id").and_then(Value::as_str) {
-            Some(id) => id,
-            None => {
-                eprintln!("Ignoring item due to missing or invalid 'id': {:?}", item);
-                return;
-            }
-        };
+    fn handle(&mut self, item: Item) {
         if let Some(prev) =
-            if item.get("deleted").is_some() {
-                self.id_map.remove(id)
+            if item.deleted.is_some() {
+                self.id_map.remove(&item.id)
             }
             else {
                 self.insert(&item);
-                self.id_map.insert(id.to_owned(), item)
+                self.id_map.insert(item.id.clone(), item)
             }
         {
             self.delete(&prev);
@@ -95,7 +101,7 @@ fn ignore_path(dirname: &str, basename: &str) -> bool {
     basename.ends_with(".svn-base") && dirname.contains("/.svn/pristine/")
 }
 
-fn analyze_items(item_map: &HashMap<String, Value>)
+fn analyze_items(item_map: &HashMap<String, Item>)
     -> (u32, u32, BTreeMap<u64, HashMap<String, Vec<String>>>)
 {
     let mut size_map = BTreeMap::<u64, HashMap<String, Vec<String>>>::new();
@@ -108,19 +114,12 @@ fn analyze_items(item_map: &HashMap<String, Value>)
     bar.tick();
     for item in item_map.values() {
         bar.inc(1);
-        if let Some(file) = item.get("file") {
+        if let Some(file) = &item.file {
             file_count += 1;
             if ignore_file(&file) {
                 continue;
             }
-            let basename = match item.get("name").and_then(Value::as_str) {
-                Some(name) => name,
-                None => {
-                    eprintln!("Ignoring item due to missing or invalid 'name': {:?}", item);
-                    continue;
-                }
-            };
-            let dirname = match item.get("parentReference")
+            let dirname = match item.parent.as_ref()
                     .and_then(|v| v.get("path"))
                     .and_then(Value::as_str) {
                 Some(path) => path.trim_start_matches("/drive/root:/"),
@@ -129,16 +128,9 @@ fn analyze_items(item_map: &HashMap<String, Value>)
                     continue;
                 }
             };
-            if ignore_path(dirname, basename) {
+            if ignore_path(dirname, &item.name) {
                 continue;
             }
-            let size = match item.get("size").and_then(Value::as_u64) {
-                Some(size) => size,
-                None => {
-                    eprintln!("Ignoring item due to missing or invalid 'size': {:?}", item);
-                    continue;
-                }
-            };
             let sha1 = match file.get("hashes")
                     .and_then(|v| v.get("sha1Hash"))
                     .and_then(Value::as_str) {
@@ -148,14 +140,14 @@ fn analyze_items(item_map: &HashMap<String, Value>)
                     continue;
                 }
             };
-            let sha_map = size_map.entry(size).or_insert_with(HashMap::<String, Vec<String>>::new);
+            let sha_map = size_map.entry(item.size).or_insert_with(HashMap::<String, Vec<String>>::new);
             // allocating the key only on insert is messy - we could use raw_entry here,
             // or maybe entry_ref() will exist one day - for now, always allocate
             let v = sha_map.entry(sha1.to_owned()).or_insert_with(Vec::<String>::new);
-            let name = format!("{}/{}", dirname, basename);
+            let name = format!("{}/{}", dirname, item.name);
             v.push(name);
         }
-        else if item.get("folder").is_some() || item.get("package").is_some() {
+        else if item.folder.is_some() || item.package.is_some() {
             folder_count += 1;
         }
         else {
@@ -212,7 +204,7 @@ fn main() {
             used as f32 * 100.0 / total as f32,
             size_as_string(deleted)
         );
-        let mut handler = ValueHandler::new(used);
+        let mut handler = ItemHandler::new(used);
         sync_drive_items(&client, drive_id, &mut handler).unwrap();
         handler.close();
         let item_map = handler.id_map;
