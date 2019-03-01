@@ -58,8 +58,8 @@ struct ItemHandler {
 
 impl ItemHandler {
 
-    fn new(used: u64) -> ItemHandler {
-        let bar = indicatif::ProgressBar::new(used);
+    fn new(expected: u64) -> ItemHandler {
+        let bar = indicatif::ProgressBar::new(expected);
         bar.set_style(indicatif::ProgressStyle::default_bar()
             .template("Fetching drive data: [{elapsed_precise}] {wide_bar} {percent}%")
             .progress_chars("#>-"));
@@ -93,6 +93,12 @@ impl ItemHandler {
 impl DriveItemHandler<Item> for ItemHandler {
     fn tick(&self) {
         self.bar.tick();
+    }
+
+    fn reset(&mut self) {
+        self.total = 0;
+        self.bar.set_position(self.total);
+        self.id_map.clear();
     }
 
     fn handle(&mut self, item: Item) {
@@ -224,7 +230,7 @@ fn main() {
             size_as_string(deleted)
         );
         let mut handler = ItemHandler::new(used);
-        let _delta_link = sync_drive_items(&client, drive_id, &mut handler).unwrap();
+        let _delta_link = sync_drive_items(&client, drive_id, None, &mut handler).unwrap();
         handler.close();
         let item_map = handler.id_map;
         let (file_count, folder_count, size_map) = analyze_items(&item_map);

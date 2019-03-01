@@ -6,8 +6,13 @@ use serde_derive::Deserialize;
 
 
 pub trait DriveItemHandler<DriveItem> {
+    // update interactive progress
     fn tick(&self);
 
+    // remove all data and start from scratch
+    fn reset(&mut self);
+
+    // handle a received drive item
     fn handle(&mut self, item: DriveItem);
 }
 
@@ -33,8 +38,7 @@ impl Error for StatusCodeError {
     }
 }
 
-
-fn get(client: &reqwest::Client, uri: &str) -> String {
+fn get(client: &reqwest::Client, uri: &str) -> Result<String, String> {
     let mut retries = 3;
     let mut default_delay = 1;
     loop {
@@ -42,8 +46,14 @@ fn get(client: &reqwest::Client, uri: &str) -> String {
             match client.get(uri).send() {
                 Ok(mut response) => match response.status() {
                     StatusCode::OK => {
-                        return response.text().unwrap();
+                        return Ok(response.text().unwrap());
                     },
+                    StatusCode::GONE => {
+                        // a delta link may have expired, in which case OneDrive will return
+                        // 410 Gone and a Location header with a new nextLink. This needs to
+                        // be handled higher up.
+                        return Err(response.headers().get("Location").unwrap().to_str().unwrap().to_owned());
+                    }
                     status if retries > 0 => {
                         let delay = match response.headers().get("Retry-After") {
                             Some(value) => {
@@ -100,29 +110,38 @@ struct SyncPage<DriveItem> {
 fn fetch_items<DriveItem>(
     client: &reqwest::Client,
     mut link: String,
-    sender: mpsc::Sender<DriveItem>
+    sender: mpsc::Sender<Option<DriveItem>>
 ) -> String
     where DriveItem: serde::de::DeserializeOwned
 {
     loop {
-        let result = get(&client, &link);
-        let page: SyncPage<DriveItem> = match serde_json::from_str(&result) {
-            Ok(page) => page,
-            Err(error) => {
-                eprintln!("{}", result);
-                eprintln!("{}", error);
-                panic!("Could not deserialize sync page")
+        match get(&client, &link) {
+            Ok(result) => {
+                let page: SyncPage<DriveItem> = match serde_json::from_str(&result) {
+                    Ok(page) => page,
+                    Err(error) => {
+                        eprintln!("{}", result);
+                        eprintln!("{}", error);
+                        panic!("Could not deserialize sync page")
+                    }
+                };
+                for value in page.value.into_iter() {
+                    sender.send(Some(value)).unwrap();
+                }
+                match page.link {
+                    SyncLink::Next(next) => {
+                        link = next;
+                    },
+                    SyncLink::Delta(delta) => {
+                        return delta;
+                    }
+                }
             }
-        };
-        for value in page.value.into_iter() {
-            sender.send(value).unwrap();
-        }
-        match page.link {
-            SyncLink::Next(next) => {
+            Err(next) => {
+                eprintln!("Delta link failed, restarting sync...");
+                // indicate that the DriveItemHandler should be reset
+                sender.send(None).unwrap();
                 link = next;
-            },
-            SyncLink::Delta(delta) => {
-                return delta;
             }
         }
     }
@@ -131,12 +150,15 @@ fn fetch_items<DriveItem>(
 pub fn sync_drive_items<DriveItem: 'static>(
     client: &reqwest::Client,
     drive_id: &str,
+    delta_link: Option<String>,
     handler: &mut impl DriveItemHandler<DriveItem>
 ) -> Result<String, Box<Error>>
 where DriveItem: Send + serde::de::DeserializeOwned
 {
-    let link = format!("https://graph.microsoft.com/v1.0/me/drives/{}/root/delta", drive_id);
-    let (sender, receiver) = mpsc::channel::<DriveItem>();
+    let link = delta_link.unwrap_or(
+        format!("https://graph.microsoft.com/v1.0/me/drives/{}/root/delta", drive_id)
+    );
+    let (sender, receiver) = mpsc::channel::<Option<DriveItem>>();
     let client = client.clone();
     let t = std::thread::spawn(move || {
         fetch_items(&client, link, sender)
@@ -144,8 +166,11 @@ where DriveItem: Send + serde::de::DeserializeOwned
     handler.tick();
     loop {
         match receiver.recv_timeout(Duration::from_secs(1)) {
-            Ok(item) => {
+            Ok(Some(item)) => {
                 handler.handle(item);
+            }
+            Ok(None) => {
+                handler.reset();
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 handler.tick();
