@@ -149,15 +149,11 @@ fn fetch_items<DriveItem>(
 
 pub fn sync_drive_items<DriveItem: 'static>(
     client: &reqwest::Client,
-    drive_id: &str,
-    delta_link: Option<String>,
+    link: String,
     handler: &mut impl DriveItemHandler<DriveItem>
 ) -> Result<String, Box<Error>>
 where DriveItem: Send + serde::de::DeserializeOwned
 {
-    let link = delta_link.unwrap_or(
-        format!("https://graph.microsoft.com/v1.0/me/drives/{}/root/delta", drive_id)
-    );
     let (sender, receiver) = mpsc::channel::<Option<DriveItem>>();
     let client = client.clone();
     let t = std::thread::spawn(move || {

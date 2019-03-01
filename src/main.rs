@@ -3,9 +3,11 @@ mod sync;
 
 use crate::sync::{sync_drive_items, DriveItemHandler};
 use std::collections::{BTreeMap, HashMap};
+use std::error::Error;
 use std::time::Duration;
+use rand::{thread_rng, Rng};
 use reqwest::{header, StatusCode};
-use serde_derive::Deserialize;
+use serde_derive::{Serialize,Deserialize};
 use serde_json::Value;
 use oauth2::prelude::*;
 use oauth2::basic::BasicTokenType;
@@ -15,21 +17,22 @@ use oauth2::basic::BasicTokenType;
 const CLIENT_ID: &str = "6612d641-e7d8-4d39-8dac-e6f21efe1bf4";
 const CLIENT_SECRET: &str = "ubnDYPYV4019]pentXO1~[=";
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Exists {
     // empty struct to avoid deserializing contents of JSON object
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 enum ItemType {
     #[serde(rename = "file")]
     File {
         // Never seen a file without a mimeType, but the existence of the `processingMetadata`
         // attribute at https://docs.microsoft.com/en-us/onedrive/developer/rest-api/resources/file
         // suggests that it might happen
-        #[serde(rename = "mimeType")]
+        #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
         mime_type: Option<String>,
         // OneNote files do not have hashes
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         hashes: Option<Value>
     },
     #[serde(rename = "folder")]
@@ -38,15 +41,16 @@ enum ItemType {
     Package {},
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Item {
     id: String,
     name: String,
     size: u64,
-    #[serde(rename = "parentReference")]
+    #[serde(rename = "parentReference", default, skip_serializing_if = "Option::is_none")]
     parent: Option<Value>,
     #[serde(flatten)]
     item_type: ItemType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     deleted: Option<Exists>,
 }
 
@@ -58,16 +62,16 @@ struct ItemHandler {
 
 impl ItemHandler {
 
-    fn new(expected: u64) -> ItemHandler {
+    fn new(items: HashMap<String, Item>, total: u64, expected: u64) -> ItemHandler {
         let bar = indicatif::ProgressBar::new(expected);
         bar.set_style(indicatif::ProgressStyle::default_bar()
             .template("Fetching drive data: [{elapsed_precise}] {wide_bar} {percent}%")
             .progress_chars("#>-"));
         bar.tick();
         ItemHandler {
-            id_map: HashMap::new(),
+            id_map: items,
             bar,
-            total: 0u64,
+            total: total,
         }
     }
 
@@ -114,6 +118,71 @@ impl DriveItemHandler<Item> for ItemHandler {
             self.delete(&prev);
         }
         self.bar.set_position(self.total);
+    }
+}
+
+#[derive(Serialize,Deserialize)]
+struct DriveState {
+    delta_link: String,
+    size: u64,
+    items: HashMap<String, Item>,
+}
+
+struct CacheDirectory {
+    xdg_dirs: xdg::BaseDirectories
+}
+
+impl CacheDirectory {
+    fn new(app_name: &str) -> CacheDirectory {
+        CacheDirectory {
+            xdg_dirs: xdg::BaseDirectories::with_prefix(app_name).unwrap()
+        }
+    }
+
+    fn load(&self, drive_id: &str) -> Result<DriveState, Box<Error>> {
+        match self.xdg_dirs.find_cache_file(format!("drive_{}", drive_id)) {
+            Some(cache_path) => {
+                let file = std::fs::File::open(&cache_path)?;
+                Ok(serde_json::from_reader(file)?)
+            }
+            None => {
+                Ok(DriveState {
+                    delta_link: format!("https://graph.microsoft.com/v1.0/me/drives/{}/root/delta", drive_id),
+                    size: 0,
+                    items: HashMap::new()
+                })
+            }
+        }
+    }
+
+    fn save(&self, drive_id: &str, state: DriveState) {
+        match self.xdg_dirs.place_cache_file(format!("drive_{}", drive_id)) {
+            Ok(cache_path) => {
+                let mut rng = thread_rng();
+                let int = rng.gen_range(1000, 10000);
+                let mut tmp_path = cache_path.clone();
+                assert!(tmp_path.set_extension(int.to_string()));
+                match std::fs::File::create(&tmp_path) {
+                    Ok(file) => {
+                        if let Err(error) = serde_json::to_writer(file, &state) {
+                            eprintln!("{}", error);
+                        }
+                        if let Err(error) = std::fs::rename(&tmp_path, cache_path){
+                            eprintln!("{}", error);
+                            if let Err(error) = std::fs::remove_file(&tmp_path){
+                                eprintln!("{}", error);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("{}", error);
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!("{}", error);
+            }
+        }
     }
 }
 
@@ -184,6 +253,7 @@ fn analyze_items(item_map: &HashMap<String, Item>)
 }
 
 fn main() {
+    let cache_dir = CacheDirectory::new("msod-stat");
     let token = auth::authenticate(CLIENT_ID.to_owned(), CLIENT_SECRET.to_owned()).unwrap();
     let mut headers = header::HeaderMap::new();
     match token.token_type() {
@@ -229,8 +299,9 @@ fn main() {
             used as f32 * 100.0 / total as f32,
             size_as_string(deleted)
         );
-        let mut handler = ItemHandler::new(used);
-        let _delta_link = sync_drive_items(&client, drive_id, None, &mut handler).unwrap();
+        let state = cache_dir.load(drive_id).unwrap();
+        let mut handler = ItemHandler::new(state.items, state.size, used);
+        let delta_link = sync_drive_items(&client, state.delta_link, &mut handler).unwrap();
         handler.close();
         let item_map = handler.id_map;
         let (file_count, folder_count, size_map) = analyze_items(&item_map);
@@ -247,6 +318,12 @@ fn main() {
                 }
             }
         }
+        let state = DriveState {
+            delta_link: delta_link,
+            size: handler.total,
+            items: item_map,
+        };
+        cache_dir.save(drive_id, state);
     }
 }
 
