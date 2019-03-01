@@ -224,7 +224,7 @@ fn main() {
             size_as_string(deleted)
         );
         let mut handler = ItemHandler::new(used);
-        sync_drive_items(&client, drive_id, &mut handler).unwrap();
+        let _delta_link = sync_drive_items(&client, drive_id, &mut handler).unwrap();
         handler.close();
         let item_map = handler.id_map;
         let (file_count, folder_count, size_map) = analyze_items(&item_map);

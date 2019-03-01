@@ -84,18 +84,25 @@ fn get(client: &reqwest::Client, uri: &str) -> String {
 }
 
 #[derive(Deserialize)]
+enum SyncLink {
+    #[serde(rename = "@odata.nextLink")]
+    Next(String),
+    #[serde(rename = "@odata.deltaLink")]
+    Delta(String)
+}
+#[derive(Deserialize)]
 struct SyncPage<DriveItem> {
     value: Vec<DriveItem>,
-    #[serde(rename = "@odata.nextLink")]
-    next_link: Option<String>,
+    #[serde(flatten)]
+    link: SyncLink,
 }
 
 fn fetch_items<DriveItem>(
     client: &reqwest::Client,
     mut link: String,
     sender: mpsc::Sender<DriveItem>
-)
-where DriveItem: serde::de::DeserializeOwned
+) -> String
+    where DriveItem: serde::de::DeserializeOwned
 {
     loop {
         let result = get(&client, &link);
@@ -110,12 +117,12 @@ where DriveItem: serde::de::DeserializeOwned
         for value in page.value.into_iter() {
             sender.send(value).unwrap();
         }
-        match page.next_link {
-            Some(next) => {
+        match page.link {
+            SyncLink::Next(next) => {
                 link = next;
             },
-            None => {
-                break;
+            SyncLink::Delta(delta) => {
+                return delta;
             }
         }
     }
@@ -125,7 +132,7 @@ pub fn sync_drive_items<DriveItem: 'static>(
     client: &reqwest::Client,
     drive_id: &str,
     handler: &mut impl DriveItemHandler<DriveItem>
-) -> Result<(), Box<Error>>
+) -> Result<String, Box<Error>>
 where DriveItem: Send + serde::de::DeserializeOwned
 {
     let link = format!("https://graph.microsoft.com/v1.0/me/drives/{}/root/delta", drive_id);
@@ -148,6 +155,5 @@ where DriveItem: Send + serde::de::DeserializeOwned
             }
         }
     }
-    t.join().map_err(|any| string_error::into_err(format!("{:?}", any)))?;
-    Ok(())
+    t.join().map_err(|any| string_error::into_err(format!("{:?}", any)))
 }
