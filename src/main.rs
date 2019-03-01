@@ -143,7 +143,7 @@ impl CacheDirectory {
         match self.xdg_dirs.find_cache_file(format!("drive_{}", drive_id)) {
             Some(cache_path) => {
                 let file = std::fs::File::open(&cache_path)?;
-                Ok(serde_json::from_reader(file)?)
+                Ok(serde_cbor::from_reader(file)?)
             }
             None => {
                 Ok(DriveState {
@@ -163,15 +163,23 @@ impl CacheDirectory {
                 let mut tmp_path = cache_path.clone();
                 assert!(tmp_path.set_extension(int.to_string()));
                 match std::fs::File::create(&tmp_path) {
-                    Ok(file) => {
-                        if let Err(error) = serde_json::to_writer(file, &state) {
+                    Ok(mut file) => {
+                        let result = serde_cbor::to_writer(&mut file, &state);
+                        drop(file);
+                        if let Err(error) = result {
                             eprintln!("{}", error);
                         }
-                        if let Err(error) = std::fs::rename(&tmp_path, cache_path){
-                            eprintln!("{}", error);
-                            if let Err(error) = std::fs::remove_file(&tmp_path){
+                        else {
+                            if let Err(error) = std::fs::rename(&tmp_path, cache_path){
                                 eprintln!("{}", error);
                             }
+                            else {
+                                return;
+                            }
+                        }
+                        // tmp_path was created but not renamed.
+                        if let Err(error) = std::fs::remove_file(&tmp_path){
+                            eprintln!("{}", error);
                         }
                     }
                     Err(error) => {
