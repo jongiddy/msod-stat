@@ -19,7 +19,8 @@ use oauth2::{
 };
 use oauth2::basic::{BasicClient, BasicTokenResponse};
 use open;
-use rand::{thread_rng, Rng};
+use rand::thread_rng;
+use rand::seq::SliceRandom;
 use tiny_http::{Server, Request, Response, Method, StatusCode};
 use url::Url;
 
@@ -132,7 +133,7 @@ fn start_server() -> Result<Server, Box<dyn Error>> {
     // Select ports in random order to prevent herding and add a bit of security through
     // non-deterministic behavior.
     let mut rng = thread_rng();
-    rng.shuffle(&mut ports);
+    ports.shuffle(&mut rng);
     let mut socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0);
     for port in &ports {
         socket.set_port(*port);
