@@ -3,7 +3,6 @@ mod sync;
 
 use crate::sync::{sync_drive_items, DriveItemHandler};
 use std::collections::{BTreeMap, HashMap};
-use std::error::Error;
 use std::time::Duration;
 use rand::{thread_rng, Rng};
 use reqwest::{header, StatusCode};
@@ -120,66 +119,80 @@ struct DriveState {
 }
 
 struct CacheDirectory {
-    xdg_dirs: xdg::BaseDirectories
+    project: Option<directories::ProjectDirs>
 }
 
 impl CacheDirectory {
-    fn new(app_name: &str) -> CacheDirectory {
+    fn new() -> CacheDirectory {
         CacheDirectory {
-            xdg_dirs: xdg::BaseDirectories::with_prefix(app_name).unwrap()
+            project: directories::ProjectDirs::from("Casa", "Giddy", "MSOD-stat")
         }
     }
 
-    fn load(&self, drive_id: &str) -> Result<DriveState, Box<Error>> {
-        match self.xdg_dirs.find_cache_file(format!("drive_{}", drive_id)) {
-            Some(cache_path) => {
-                let file = std::fs::File::open(&cache_path)?;
-                Ok(serde_cbor::from_reader(file)?)
+    fn cache_filename(&self, drive_id: &str) -> Option<std::path::PathBuf> {
+        match &self.project {
+            Some(project) => {
+                let mut cache_path = project.cache_dir().to_path_buf();
+                if let Err(_) = std::fs::create_dir_all(&cache_path) {
+                    // let a later error sort it out
+                }
+                cache_path.push(format!("drive_{}", drive_id));
+                Some(cache_path)
             }
-            None => {
-                Ok(DriveState {
-                    delta_link: format!("https://graph.microsoft.com/v1.0/me/drives/{}/root/delta", drive_id),
-                    size: 0,
-                    items: HashMap::new()
-                })
+            None => None
+        }
+    }
+
+    fn load(&self, drive_id: &str) -> DriveState {
+        if let Some(path) = self.cache_filename(drive_id) {
+            match std::fs::File::open(path) {
+                Ok(file) => {
+                    match serde_cbor::from_reader(file) {
+                        Ok(state) => return state,
+                        Err(error) => eprintln!("{}", error)
+                    }
+                }
+                Err(_) => {
+                    // file does not exist
+                }
             }
+        }
+        DriveState {
+            delta_link: format!("https://graph.microsoft.com/v1.0/me/drives/{}/root/delta", drive_id),
+            size: 0,
+            items: HashMap::new()
         }
     }
 
     fn save(&self, drive_id: &str, state: DriveState) {
-        match self.xdg_dirs.place_cache_file(format!("drive_{}", drive_id)) {
-            Ok(cache_path) => {
-                let mut rng = thread_rng();
-                let int = rng.gen_range(1000, 10000);
-                let mut tmp_path = cache_path.clone();
-                assert!(tmp_path.set_extension(int.to_string()));
-                match std::fs::File::create(&tmp_path) {
-                    Ok(mut file) => {
-                        let result = serde_cbor::to_writer(&mut file, &state);
-                        drop(file);
-                        if let Err(error) = result {
+        if let Some(path) = self.cache_filename(drive_id) {
+            let mut rng = thread_rng();
+            let int = rng.gen_range(1000, 10000);
+            let mut tmp_path = path.to_path_buf();
+            assert!(tmp_path.set_extension(int.to_string()));
+            match std::fs::File::create(&tmp_path) {
+                Ok(mut file) => {
+                    let result = serde_cbor::to_writer(&mut file, &state);
+                    drop(file);
+                    if let Err(error) = result {
+                        eprintln!("{}", error);
+                    }
+                    else {
+                        if let Err(error) = std::fs::rename(&tmp_path, path){
                             eprintln!("{}", error);
                         }
                         else {
-                            if let Err(error) = std::fs::rename(&tmp_path, cache_path){
-                                eprintln!("{}", error);
-                            }
-                            else {
-                                return;
-                            }
-                        }
-                        // tmp_path was created but not renamed.
-                        if let Err(error) = std::fs::remove_file(&tmp_path){
-                            eprintln!("{}", error);
+                            return;
                         }
                     }
-                    Err(error) => {
+                    // tmp_path was created but not renamed.
+                    if let Err(error) = std::fs::remove_file(&tmp_path){
                         eprintln!("{}", error);
                     }
                 }
-            }
-            Err(error) => {
-                eprintln!("{}", error);
+                Err(error) => {
+                    eprintln!("{}", error);
+                }
             }
         }
     }
@@ -252,7 +265,7 @@ fn analyze_items(item_map: &HashMap<String, Item>)
 }
 
 fn main() {
-    let cache_dir = CacheDirectory::new("msod-stat");
+    let cache_dir = CacheDirectory::new();
     let token = auth::authenticate(CLIENT_ID.to_owned(), CLIENT_SECRET.to_owned()).unwrap();
     let mut headers = header::HeaderMap::new();
     match token.token_type() {
@@ -303,7 +316,7 @@ fn main() {
             .template("Fetching drive data: [{elapsed_precise}] {wide_bar} {percent}%")
             .progress_chars("#>-"));
         bar.tick();
-        let state = cache_dir.load(drive_id).unwrap();
+        let state = cache_dir.load(drive_id);
         bar.set_position(state.size);
         let mut handler = ItemHandler::new(state.items, state.size, &bar);
         let delta_link = sync_drive_items(&client, state.delta_link, &mut handler).unwrap();

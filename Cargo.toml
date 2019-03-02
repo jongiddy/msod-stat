@@ -5,6 +5,7 @@ authors = ["Jonathan Giddy <jongiddy@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+directories = "*"
 failure = "*"
 http = "*"
 indicatif = "*"
@@ -19,4 +20,3 @@ serde_json = "*"
 string-error = "*"
 tiny_http = "*"
 url = "*"
-xdg = "*"
