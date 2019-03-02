@@ -54,20 +54,15 @@ struct Item {
     deleted: Option<Exists>,
 }
 
-struct ItemHandler {
+struct ItemHandler<'a> {
     id_map: HashMap<String, Item>,
-    bar: indicatif::ProgressBar,
+    bar: &'a indicatif::ProgressBar,
     total: u64,
 }
 
-impl ItemHandler {
+impl<'a> ItemHandler<'a> {
 
-    fn new(items: HashMap<String, Item>, total: u64, expected: u64) -> ItemHandler {
-        let bar = indicatif::ProgressBar::new(expected);
-        bar.set_style(indicatif::ProgressStyle::default_bar()
-            .template("Fetching drive data: [{elapsed_precise}] {wide_bar} {percent}%")
-            .progress_chars("#>-"));
-        bar.tick();
+    fn new(items: HashMap<String, Item>, total: u64, bar: &indicatif::ProgressBar) -> ItemHandler {
         ItemHandler {
             id_map: items,
             bar,
@@ -88,13 +83,9 @@ impl ItemHandler {
             self.total -= size;
         }
     }
-
-    fn close(&self) {
-        self.bar.finish_and_clear();
-    }
 }
 
-impl DriveItemHandler<Item> for ItemHandler {
+impl<'a> DriveItemHandler<Item> for ItemHandler<'a> {
     fn tick(&self) {
         self.bar.tick();
     }
@@ -307,10 +298,16 @@ fn main() {
             used as f32 * 100.0 / total as f32,
             size_as_string(deleted)
         );
+        let bar = indicatif::ProgressBar::new(used);
+        bar.set_style(indicatif::ProgressStyle::default_bar()
+            .template("Fetching drive data: [{elapsed_precise}] {wide_bar} {percent}%")
+            .progress_chars("#>-"));
+        bar.tick();
         let state = cache_dir.load(drive_id).unwrap();
-        let mut handler = ItemHandler::new(state.items, state.size, used);
+        bar.set_position(state.size);
+        let mut handler = ItemHandler::new(state.items, state.size, &bar);
         let delta_link = sync_drive_items(&client, state.delta_link, &mut handler).unwrap();
-        handler.close();
+        bar.finish_and_clear();
         let item_map = handler.id_map;
         let (file_count, folder_count, size_map) = analyze_items(&item_map);
         println!("folders:{:>10}", folder_count);
