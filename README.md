@@ -5,7 +5,7 @@ Currently only works on OneDrive Personal.
 Example run:
 
 ```
-$ cargo run
+$ cargo run --release
 
 Drive 33939c2f5f6e
 total:        1029.500 GiB

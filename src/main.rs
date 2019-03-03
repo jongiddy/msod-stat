@@ -158,7 +158,8 @@ impl CacheDirectory {
         if let Some(path) = self.cache_filename(drive_id) {
             match std::fs::File::open(path) {
                 Ok(file) => {
-                    match serde_cbor::from_reader(file) {
+                    let reader = std::io::BufReader::new(file);
+                    match serde_cbor::from_reader(reader) {
                         Ok(state) => return state,
                         Err(error) => eprintln!("{}", error)
                     }
@@ -182,9 +183,11 @@ impl CacheDirectory {
             let mut tmp_path = path.to_path_buf();
             assert!(tmp_path.set_extension(int.to_string()));
             match std::fs::File::create(&tmp_path) {
-                Ok(mut file) => {
-                    let result = serde_cbor::to_writer(&mut file, &state);
-                    drop(file);
+                Ok(file) => {
+                    let result = {
+                        let mut writer = std::io::BufWriter::new(file);
+                        serde_cbor::to_writer(&mut writer, &state)
+                    };
                     if let Err(error) = result {
                         eprintln!("{}", error);
                     }
