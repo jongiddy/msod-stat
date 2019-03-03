@@ -1,6 +1,9 @@
 mod auth;
 mod sync;
 
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 use crate::sync::{sync_drive_items, DriveItemHandler};
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
