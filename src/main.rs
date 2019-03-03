@@ -22,6 +22,17 @@ struct Exists {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
+struct Hash {
+    #[serde(rename = "sha1Hash")]
+    sha: String
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+struct Parent {
+    path: String
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 enum ItemType {
     #[serde(rename = "file")]
     File {
@@ -32,7 +43,7 @@ enum ItemType {
         mime_type: Option<String>,
         // OneNote files do not have hashes
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        hashes: Option<Value>
+        hashes: Option<Hash>
     },
     #[serde(rename = "folder")]
     Folder {},
@@ -46,7 +57,7 @@ struct Item {
     name: String,
     size: u64,
     #[serde(rename = "parentReference", default, skip_serializing_if = "Option::is_none")]
-    parent: Option<Value>,
+    parent: Option<Parent>,
     #[serde(flatten)]
     item_type: ItemType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -229,10 +240,8 @@ fn analyze_items(item_map: &HashMap<String, Item>)
                 if ignore_file(&mime_type) {
                     continue;
                 }
-                let dirname = match item.parent.as_ref()
-                        .and_then(|v| v.get("path"))
-                        .and_then(Value::as_str) {
-                    Some(path) => path.trim_start_matches("/drive/root:/"),
+                let dirname = match &item.parent {
+                    Some(parent) => parent.path.trim_start_matches("/drive/root:/"),
                     None => {
                         eprintln!("Ignoring item due to missing or invalid 'parentReference': {:?}", item);
                         continue;
@@ -241,8 +250,8 @@ fn analyze_items(item_map: &HashMap<String, Item>)
                 if ignore_path(dirname, &item.name) {
                     continue;
                 }
-                let sha1 = match hashes.as_ref().and_then(|v| v.get("sha1Hash")).and_then(Value::as_str) {
-                    Some(sha1) => sha1,
+                let sha1 = match hashes {
+                    Some(hash) => &hash.sha,
                     None => {
                         eprintln!("Ignoring item due to missing or invalid 'sha1': {:?}", hashes);
                         continue;
