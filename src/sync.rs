@@ -6,9 +6,6 @@ use serde_derive::Deserialize;
 
 
 pub trait DriveItemHandler<DriveItem> {
-    // update interactive progress
-    fn tick(&self);
-
     // remove all data and start from scratch
     fn reset(&mut self);
 
@@ -159,19 +156,15 @@ where DriveItem: Send + serde::de::DeserializeOwned
     let t = std::thread::spawn(move || {
         fetch_items(&client, link, sender)
     });
-    handler.tick();
     loop {
-        match receiver.recv_timeout(Duration::from_secs(1)) {
+        match receiver.recv() {
             Ok(Some(item)) => {
                 handler.handle(item);
             }
             Ok(None) => {
                 handler.reset();
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                handler.tick();
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(mpsc::RecvError) => {
                 break;
             }
         }

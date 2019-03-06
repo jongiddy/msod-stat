@@ -101,10 +101,6 @@ impl<'a> ItemHandler<'a> {
 }
 
 impl<'a> DriveItemHandler<Item> for ItemHandler<'a> {
-    fn tick(&self) {
-        self.bar.tick();
-    }
-
     fn reset(&mut self) {
         self.total = 0;
         self.bar.set_position(self.total);
@@ -332,7 +328,7 @@ fn main() {
         bar.set_style(indicatif::ProgressStyle::default_bar()
             .template("Fetching drive data: [{elapsed_precise}] {wide_bar} {percent}%")
             .progress_chars("#>-"));
-        bar.tick();
+        bar.enable_steady_tick(100);
         let state = cache_dir.load(drive_id);
         bar.set_position(state.size);
         let mut handler = ItemHandler::new(state.items, state.size, &bar);
