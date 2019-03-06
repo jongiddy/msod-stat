@@ -58,6 +58,8 @@ enum ItemType {
 struct Item {
     id: String,
     name: String,
+    // a deleted folder does not have a size
+    #[serde(default)]
     size: u64,
     #[serde(rename = "parentReference", default, skip_serializing_if = "Option::is_none")]
     parent: Option<Parent>,
