@@ -43,7 +43,18 @@ fn get(client: &reqwest::Client, uri: &str) -> Result<String, String> {
             match client.get(uri).send() {
                 Ok(mut response) => match response.status() {
                     StatusCode::OK => {
-                        return Ok(response.text().unwrap());
+                        match response.text() {
+                            Ok(text) => {
+                                return Ok(text);
+                            }
+                            Err(ref error) if retries > 0 => {
+                                eprintln!("{}\n", error);
+                                default_delay
+                            }
+                            Err(error) => {
+                                panic!(error);
+                            }
+                        }
                     },
                     StatusCode::GONE => {
                         // a delta link may have expired, in which case OneDrive will return
