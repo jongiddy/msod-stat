@@ -35,63 +35,21 @@ impl Error for StatusCodeError {
     }
 }
 
-fn get(client: &reqwest::Client, uri: &str) -> Result<String, String> {
+fn get(client: &reqwest::Client, uri: &str) -> Result<reqwest::Response, Box<Error>> {
     let mut retries = 3;
     let mut default_delay = 1;
     loop {
         let retry_delay = Duration::from_secs(
             match client.get(uri).send() {
-                Ok(mut response) => match response.status() {
-                    StatusCode::OK => {
-                        match response.text() {
-                            Ok(text) => {
-                                return Ok(text);
-                            }
-                            Err(ref error) if retries > 0 => {
-                                eprintln!("{}\n", error);
-                                default_delay
-                            }
-                            Err(error) => {
-                                panic!(error);
-                            }
-                        }
-                    },
-                    StatusCode::GONE => {
-                        // a delta link may have expired, in which case OneDrive will return
-                        // 410 Gone and a Location header with a new nextLink. This needs to
-                        // be handled higher up.
-                        return Err(response.headers().get("Location").unwrap().to_str().unwrap().to_owned());
-                    }
-                    status if retries > 0 => {
-                        let delay = match response.headers().get("Retry-After") {
-                            Some(value) => {
-                                match value.to_str() {
-                                    Ok(value) => {
-                                        value.parse().unwrap_or(default_delay)
-                                    },
-                                    Err(error) => {
-                                        eprintln!("{}\n", error);
-                                        default_delay
-                                    }
-                                }
-                            },
-                            None => {
-                                default_delay
-                            }
-                        };
-                        eprintln!("HTTP status {}...\n", status);
-                        delay
-                    },
-                    status => {
-                        panic!("{:?} {}", status, status.canonical_reason().unwrap());
-                    }
-                },
+                Ok(response) => {
+                    return Ok(response);
+                }
                 Err(ref error) if retries > 0 => {
                     eprintln!("{:?}\n", error);
                     default_delay
                 },
                 Err(error) => {
-                    panic!("{}", error);
+                    return Err(error.into());
                 }
             }
         );
@@ -124,32 +82,62 @@ fn fetch_items<DriveItem>(
 {
     loop {
         match get(&client, &link) {
-            Ok(result) => {
-                let page: SyncPage<DriveItem> = match serde_json::from_str(&result) {
-                    Ok(page) => page,
-                    Err(error) => {
-                        eprintln!("{}", result);
-                        eprintln!("{}", error);
-                        panic!("Could not deserialize sync page")
-                    }
-                };
-                for value in page.value.into_iter() {
-                    sender.send(Some(value)).unwrap();
-                }
-                match page.link {
-                    SyncLink::Next(next) => {
-                        link = next;
-                    },
-                    SyncLink::Delta(delta) => {
-                        return delta;
-                    }
-                }
+            Err(error) => {
+                eprintln!("{}", error);
+                panic!("Error fetching items");
             }
-            Err(next) => {
-                eprintln!("Delta link failed, restarting sync...");
-                // indicate that the DriveItemHandler should be reset
-                sender.send(None).unwrap();
-                link = next;
+            Ok(mut response) => match response.status() {
+                StatusCode::OK => {
+                    match response.text() {
+                        Ok(text) => {
+                            let page: SyncPage<DriveItem> = match serde_json::from_str(&text) {
+                                Ok(page) => page,
+                                Err(error) => {
+                                    eprintln!("{}", text);
+                                    eprintln!("{}", error);
+                                    panic!("Could not deserialize sync page")
+                                }
+                            };
+                            for value in page.value.into_iter() {
+                                sender.send(Some(value)).unwrap();
+                            }
+                            match page.link {
+                                SyncLink::Next(next) => {
+                                    link = next;
+                                },
+                                SyncLink::Delta(delta) => {
+                                    return delta;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            // error receiving full response, try again with same link
+                            eprintln!("{}", error);
+                        }
+                    }
+                },
+                StatusCode::GONE => {
+                    // if the delta link has expired, OneDrive will return
+                    // 410 Gone and a Location header with a new nextLink,
+                    // but we start from the beginning of the sync.
+                    eprintln!("Delta link failed, restarting sync...");
+                    // indicate that the DriveItemHandler should be reset
+                    sender.send(None).unwrap();
+                    link = response.headers().get("Location").unwrap().to_str().unwrap().to_owned();
+                }
+                status => {
+                    match response.headers().get("Retry-After") {
+                        Some(value) => {
+                            let s = value.to_str().unwrap();
+                            eprintln!("Status {:?}, Retry-After: {}\n", status, s);
+                            let delay = s.parse().unwrap();
+                            std::thread::sleep(Duration::from_secs(delay));
+                        }
+                        None => {
+                            panic!("{:?} {}", status, status.canonical_reason().unwrap());
+                        }
+                    }
+                }
             }
         }
     }
