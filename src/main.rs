@@ -1,6 +1,14 @@
 mod auth;
 mod sync;
 
+// There are a number of techniques used to make this code faster.
+// - jemalloc seems to be faster for allocation and deallocation of the many serde objects
+// - buffering peristence I/O (easy to forget that Rust files are not buffered by default)
+// - adding a select clause to the retrieval link saves bandwidth and almost halves the time to sync
+// A few things cause a slight speedup, but mostly save space:
+// - using typed serde rather than Value to deserialize less (saves memory)
+// - using CBOR for persistence rather than JSON (saves disk space)
+
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
@@ -58,12 +66,11 @@ enum ItemType {
 struct Item {
     id: String,
     name: String,
-    // a deleted folder does not have a size
-    #[serde(default)]
+    #[serde(default)]  // a deleted item has no size, use 0
     size: u64,
     #[serde(rename = "parentReference", default, skip_serializing_if = "Option::is_none")]
     parent: Option<Parent>,
-    #[serde(flatten)]
+    #[serde(flatten)]  // item_type replaced in serialization with one of file, folder, package
     item_type: ItemType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     deleted: Option<Exists>,
@@ -170,8 +177,14 @@ impl CacheDirectory {
                 }
             }
         }
+        const PREFIX: &str = "https://graph.microsoft.com/v1.0/me/drives/";
+        const SUFFIX: &str = "/root/delta?select=id,name,size,parentReference,file,folder,package,deleted";
+        let mut link = String::with_capacity(PREFIX.len() + drive_id.len() + SUFFIX.len());
+        link.push_str(PREFIX);
+        link.push_str(drive_id);
+        link.push_str(SUFFIX);
         DriveState {
-            delta_link: format!("https://graph.microsoft.com/v1.0/me/drives/{}/root/delta", drive_id),
+            delta_link: link,
             size: 0,
             items: HashMap::new()
         }
