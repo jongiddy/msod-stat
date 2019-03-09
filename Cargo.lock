@@ -672,7 +672,7 @@ dependencies = [
  "http 0.1.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "indicatif 0.11.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "jemallocator 0.1.9 (registry+https://github.com/rust-lang/crates.io-index)",
- "oauth2 2.0.0-alpha.5 (git+https://github.com/ramosbugs/oauth2-rs?rev=feecab6fffc62db13a8cd7c4616a982698f4ec6f)",
+ "oauth2 2.0.0-alpha.6 (git+https://github.com/ramosbugs/oauth2-rs)",
  "open 1.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "rand 0.6.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "reqwest 0.9.11 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -748,8 +748,8 @@ dependencies = [
 
 [[package]]
 name = "oauth2"
-version = "2.0.0-alpha.5"
-source = "git+https://github.com/ramosbugs/oauth2-rs?rev=feecab6fffc62db13a8cd7c4616a982698f4ec6f#feecab6fffc62db13a8cd7c4616a982698f4ec6f"
+version = "2.0.0-alpha.6"
+source = "git+https://github.com/ramosbugs/oauth2-rs#5ff2139390f0147cac3050c63b848acde05fbd35"
 dependencies = [
  "base64 0.9.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "curl 0.4.19 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1665,7 +1665,7 @@ dependencies = [
 "checksum num-traits 0.2.6 (registry+https://github.com/rust-lang/crates.io-index)" = "0b3a5d7cc97d6d30d8b9bc8fa19bf45349ffe46241e8816f50f62f6d6aaabee1"
 "checksum num_cpus 1.10.0 (registry+https://github.com/rust-lang/crates.io-index)" = "1a23f0ed30a54abaa0c7e83b1d2d87ada7c3c23078d1d87815af3e3b6385fbba"
 "checksum number_prefix 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)" = "dbf9993e59c894e3c08aa1c2712914e9e6bf1fcbfc6bef283e2183df345a4fee"
-"checksum oauth2 2.0.0-alpha.5 (git+https://github.com/ramosbugs/oauth2-rs?rev=feecab6fffc62db13a8cd7c4616a982698f4ec6f)" = "<none>"
+"checksum oauth2 2.0.0-alpha.6 (git+https://github.com/ramosbugs/oauth2-rs)" = "<none>"
 "checksum open 1.2.2 (registry+https://github.com/rust-lang/crates.io-index)" = "eedfa0ca7b54d84d948bfd058b8f82e767d11f362dd78c36866fd1f69c175867"
 "checksum openssl 0.10.19 (registry+https://github.com/rust-lang/crates.io-index)" = "84321fb9004c3bce5611188a644d6171f895fa2889d155927d528782edb21c5d"
 "checksum openssl-probe 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)" = "77af24da69f9d9341038eba93a073b1fdaaa1b788221b00a69bce9e762cb32de"

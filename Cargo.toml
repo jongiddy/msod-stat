@@ -10,7 +10,7 @@ failure = "*"
 http = "*"
 indicatif = "*"
 jemallocator = "*"
-oauth2 = { git = "https://github.com/ramosbugs/oauth2-rs", rev = "feecab6fffc62db13a8cd7c4616a982698f4ec6f" }
+oauth2 = { git = "https://github.com/ramosbugs/oauth2-rs" }
 open = "*"
 rand = "*"
 reqwest = "0.9.11"  # on update, also change REQWEST_VERSION in main.rs
