@@ -1,6 +1,6 @@
 [package]
 name = "msod-stat"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Jonathan Giddy <jongiddy@gmail.com>"]
 edition = "2018"
 
@@ -10,10 +10,10 @@ failure = "*"
 http = "*"
 indicatif = "*"
 jemallocator = "*"
-oauth2 = { git = "https://github.com/ramosbugs/oauth2-rs" }
+oauth2 = { git = "https://github.com/ramosbugs/oauth2-rs", rev = "feecab6fffc62db13a8cd7c4616a982698f4ec6f" }
 open = "*"
 rand = "*"
-reqwest = "*"
+reqwest = "0.9.11"  # on update, also change REQWEST_VERSION in main.rs
 serde = "*"
 serde_cbor = "*"
 serde_derive = "*"

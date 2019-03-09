@@ -22,6 +22,10 @@ use serde_json::Value;
 use oauth2::prelude::*;
 use oauth2::basic::BasicTokenType;
 
+const CRATE_NAME: Option<&str> = option_env!("CARGO_PKG_NAME");
+const CRATE_VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
+const REQWEST_VERSION: &str = "0.9.11";
+
 // Making the OAuth2 client secret public is secure because PKCE ensures
 // that only the originator can use the authorization code.
 const CLIENT_ID: &str = "6612d641-e7d8-4d39-8dac-e6f21efe1bf4";
@@ -294,6 +298,16 @@ fn main() {
     let cache_dir = CacheDirectory::new();
     let token = auth::authenticate(CLIENT_ID.to_owned(), CLIENT_SECRET.to_owned()).unwrap();
     let mut headers = header::HeaderMap::new();
+    headers.insert(
+        header::USER_AGENT,
+        header::HeaderValue::from_str(
+            &format!(
+                "{}/{} reqwest/{}",
+                CRATE_NAME.unwrap_or("msod-stat"),
+                CRATE_VERSION.unwrap_or("unknown"),
+                REQWEST_VERSION,
+            )
+        ).unwrap());
     match token.token_type() {
         BasicTokenType::Bearer => {
             headers.insert(
