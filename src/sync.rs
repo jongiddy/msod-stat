@@ -13,58 +13,33 @@ pub trait DriveItemHandler<DriveItem> {
     fn handle(&mut self, item: DriveItem);
 }
 
-#[derive(Debug, Clone)]
-struct StatusCodeError {
-    status: StatusCode
-}
-
-impl std::fmt::Display for StatusCodeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:?} {}", self.status, self.status.canonical_reason().unwrap())
-    }
-}
-
-impl Error for StatusCodeError {
-    fn description(&self) -> &str {
-        "status code error"
-    }
-
-    fn cause(&self) -> Option<&Error> {
-        // Generic error, underlying cause isn't tracked.
-        None
-    }
-}
-
 fn get(client: &reqwest::Client, uri: &str) -> Result<reqwest::Response, Box<Error>> {
     let mut retries = 3;
-    let mut default_delay = 1;
+    let mut delay = 1;
     loop {
-        let retry_delay = Duration::from_secs(
-            match client.get(uri).send() {
-                Ok(response) => {
-                    return Ok(response);
-                }
-                Err(ref error) if retries > 0 => {
-                    eprintln!("{:?}\n", error);
-                    default_delay
-                },
-                Err(error) => {
-                    return Err(error.into());
-                }
+        match client.get(uri).send() {
+            Ok(response) => {
+                return Ok(response);
             }
-        );
-        std::thread::sleep(retry_delay);
+            Err(ref error) if retries > 0 => {
+                eprintln!("{:?}\n", error);
+            },
+            Err(error) => {
+                return Err(error.into());
+            }
+        }
+        std::thread::sleep(Duration::from_secs(delay));
         retries -= 1;
-        default_delay *= 16;
+        delay *= 16;
     }
 }
 
 #[derive(Deserialize)]
 enum SyncLink {
     #[serde(rename = "@odata.nextLink")]
-    Next(String),
+    More(String),
     #[serde(rename = "@odata.deltaLink")]
-    Delta(String)
+    Done(String)
 }
 #[derive(Deserialize)]
 struct SyncPage<DriveItem> {
@@ -100,10 +75,10 @@ fn fetch_items<DriveItem>(
                             };
                             sender.send(Some(page.value)).unwrap();
                             match page.link {
-                                SyncLink::Next(next) => {
+                                SyncLink::More(next) => {
                                     link = next;
                                 },
-                                SyncLink::Delta(delta) => {
+                                SyncLink::Done(delta) => {
                                     return delta;
                                 }
                             }
@@ -115,15 +90,18 @@ fn fetch_items<DriveItem>(
                     }
                 },
                 StatusCode::GONE => {
-                    // if the delta link has expired, OneDrive will return
-                    // 410 Gone and a Location header with a new nextLink,
-                    // but we start from the beginning of the sync.
+                    // If the server returns 410 Gone, the delta link has expired, and we need to
+                    // start a new sync using the link in the Location header.
+                    // https://docs.microsoft.com/onedrive/developer/rest-api/api/driveitem_delta#response-2
                     eprintln!("Delta link failed, restarting sync...");
-                    // indicate that the DriveItemHandler should be reset
+                    // Send None to indicate that the DriveItemHandler should be reset
                     sender.send(None).unwrap();
                     link = response.headers().get("Location").unwrap().to_str().unwrap().to_owned();
                 }
                 status => {
+                    // If the server returns a Retry-After header, then everything appears OK with
+                    // the request, we just need to slow down.
+                    // https://docs.microsoft.com/onedrive/developer/rest-api/concepts/scan-guidance#what-happens-when-you-get-throttled
                     match response.headers().get("Retry-After") {
                         Some(value) => {
                             let s = value.to_str().unwrap();
@@ -161,9 +139,12 @@ where DriveItem: Send + serde::de::DeserializeOwned
                 }
             }
             Ok(None) => {
+                // None indicates that the sender thread has had to restart the sync from the beginning.
                 handler.reset();
             }
             Err(mpsc::RecvError) => {
+                // RecvError means that the sender has closed the channel. This only happens
+                // when there are no more pages or the sending thread has panicked.
                 break;
             }
         }
