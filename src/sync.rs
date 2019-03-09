@@ -76,7 +76,7 @@ struct SyncPage<DriveItem> {
 fn fetch_items<DriveItem>(
     client: &reqwest::Client,
     mut link: String,
-    sender: mpsc::Sender<Option<DriveItem>>
+    sender: mpsc::Sender<Option<Vec<DriveItem>>>
 ) -> String
     where DriveItem: serde::de::DeserializeOwned
 {
@@ -98,9 +98,7 @@ fn fetch_items<DriveItem>(
                                     panic!("Could not deserialize sync page")
                                 }
                             };
-                            for value in page.value.into_iter() {
-                                sender.send(Some(value)).unwrap();
-                            }
+                            sender.send(Some(page.value)).unwrap();
                             match page.link {
                                 SyncLink::Next(next) => {
                                     link = next;
@@ -150,15 +148,17 @@ pub fn sync_drive_items<DriveItem: 'static>(
 ) -> Result<String, Box<Error>>
 where DriveItem: Send + serde::de::DeserializeOwned
 {
-    let (sender, receiver) = mpsc::channel::<Option<DriveItem>>();
+    let (sender, receiver) = mpsc::channel::<Option<Vec<DriveItem>>>();
     let client = client.clone();
     let t = std::thread::spawn(move || {
         fetch_items(&client, link, sender)
     });
     loop {
         match receiver.recv() {
-            Ok(Some(item)) => {
-                handler.handle(item);
+            Ok(Some(items)) => {
+                for item in items.into_iter() {
+                    handler.handle(item);
+                }
             }
             Ok(None) => {
                 handler.reset();
