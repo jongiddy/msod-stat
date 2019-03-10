@@ -1,4 +1,6 @@
 mod auth;
+mod item;
+mod storage;
 mod sync;
 
 // There are a number of techniques used to make this code faster.
@@ -12,13 +14,13 @@ mod sync;
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
+use crate::item::{DriveSnapshot, DriveState, Item, ItemType};
 use crate::sync::{sync_drive_items, DriveItemHandler};
+use crate::storage::Storage;
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::time::Duration;
-use rand::{thread_rng, Rng};
 use reqwest::{header, StatusCode};
-use serde_derive::{Serialize,Deserialize};
 use serde_json::Value;
 use oauth2::prelude::*;
 use oauth2::basic::BasicTokenType;
@@ -33,123 +35,6 @@ const REQWEST_VERSION: &str = "0.9.11";
 const CLIENT_ID: &str = "6612d641-e7d8-4d39-8dac-e6f21efe1bf4";
 const CLIENT_SECRET: &str = "ubnDYPYV4019]pentXO1~[=";
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Exists {
-    // empty struct to avoid deserializing contents of JSON object
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-struct Hash {
-    #[serde(rename = "sha1Hash")]
-    sha: String
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-struct Parent {
-    path: String
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-enum ItemType {
-    #[serde(rename = "file")]
-    File {
-        // Never seen a file without a mimeType, but the existence of the `processingMetadata`
-        // attribute at https://docs.microsoft.com/en-us/onedrive/developer/rest-api/resources/file
-        // suggests that it might happen
-        #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
-        mime_type: Option<String>,
-        // OneNote files do not have hashes
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        hashes: Option<Hash>
-    },
-    #[serde(rename = "folder")]
-    Folder {},
-    #[serde(rename = "package")]
-    Package {},
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Item {
-    id: String,
-    name: String,
-    #[serde(default)]  // a deleted item has no size, use 0
-    size: u64,
-    #[serde(rename = "parentReference", default, skip_serializing_if = "Option::is_none")]
-    parent: Option<Parent>,
-    #[serde(flatten)]  // item_type replaced in serialization with one of file, folder, package
-    item_type: ItemType,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    deleted: Option<Exists>,
-}
-
-#[derive(Serialize,Deserialize)]
-struct DriveState {
-    size: u64,
-    items: HashMap<String, Item>,
-}
-
-impl DriveState {
-    fn reset(&mut self) -> u64 {
-        self.size = 0;
-        self.items.clear();
-        self.size
-    }
-
-    fn upsert(&mut self, item: Item) -> u64 {
-        if let ItemType::File {..} = item.item_type {
-            self.size += item.size;
-        }
-        if let Some(prev) = self.items.insert(item.id.clone(), item) {
-            if let ItemType::File {..} = prev.item_type {
-                let size = prev.size;
-                assert!(size <= self.size);
-                self.size -= size;
-            };
-        };
-        self.size
-    }
-
-    fn delete(&mut self, item: Item) -> u64 {
-        if let Some(prev) = self.items.remove(&item.id) {
-            if let ItemType::File {..} = prev.item_type {
-                let size = prev.size;
-                assert!(size <= self.size);
-                self.size -= size;
-            }
-        }
-        self.size
-    }
-}
-
-#[derive(Serialize,Deserialize)]
-struct DriveSnapshot {
-    delta_link: String,
-    #[serde(flatten)]
-    state: DriveState,
-}
-
-impl DriveSnapshot {
-    fn default(drive_id: &str) -> DriveSnapshot {
-        // an initial state that will scan entire drive
-        const PREFIX: &str = "https://graph.microsoft.com/v1.0/me/drives/";
-        const SUFFIX: &str = concat!(
-            "/root/delta",
-            "?select=id,name,size,parentReference,file,folder,package,deleted"
-        );
-        let mut link = String::with_capacity(PREFIX.len() + drive_id.len() + SUFFIX.len());
-        link.push_str(PREFIX);
-        link.push_str(drive_id);
-        link.push_str(SUFFIX);
-        DriveSnapshot {
-            delta_link: link,
-            state: DriveState {
-                size: 0,
-                items: HashMap::new()
-            }
-        }
-    }
-}
-
 fn cache_filename(project: &Option<directories::ProjectDirs>, drive_id: &str) -> Option<std::path::PathBuf> {
     match project {
         Some(project) => {
@@ -161,79 +46,6 @@ fn cache_filename(project: &Option<directories::ProjectDirs>, drive_id: &str) ->
             Some(cache_path)
         }
         None => None
-    }
-}
-
-struct Storage {
-    path: Option<std::path::PathBuf>,
-}
-
-impl Storage {
-
-    fn new(path: Option<std::path::PathBuf>) -> Storage {
-        Storage {path}
-    }
-
-    fn load<T>(&self) -> Option<T>
-        where T: serde::de::DeserializeOwned
-    {
-        if let Some(path) = &self.path {
-            match std::fs::File::open(path) {
-                Ok(file) => {
-                    let reader = std::io::BufReader::new(file);
-                    match serde_cbor::from_reader(reader) {
-                        Ok(state) => {
-                            return Some(state);
-                        }
-                        Err(error) => {
-                            // storage file corrupted
-                            eprintln!("{}\n", error);
-                        }
-                    }
-                }
-                Err(_) => {
-                    // file does not exist, don't display an error for this common state.
-                }
-            }
-        }
-        None
-    }
-
-    fn save<T>(&self, state: &T)
-        where T: serde::ser::Serialize
-    {
-        if let Some(path) = &self.path {
-            let mut rng = thread_rng();
-            let int = rng.gen_range(1000, 10000);
-            let mut tmp_path = path.to_path_buf();
-            assert!(tmp_path.set_extension(int.to_string()));
-            match std::fs::File::create(&tmp_path) {
-                Ok(file) => {
-                    let result = {
-                        let mut writer = std::io::BufWriter::new(file);
-                        serde_cbor::to_writer(&mut writer, &state)
-                    };
-                    if let Err(error) = result {
-                        eprintln!("{}\n", error);
-                    }
-                    else {
-                        if let Err(error) = std::fs::rename(&tmp_path, path){
-                            eprintln!("{}\n", error);
-                        }
-                        else {
-                            return;
-                        }
-                    }
-                    // tmp_path was created but not renamed.
-                    if let Err(error) = std::fs::remove_file(&tmp_path){
-                        eprintln!("{}\n", error);
-                    }
-                }
-                Err(error) => {
-                    eprintln!("{}\n", error);
-                }
-            }
-        }
     }
 }
 
