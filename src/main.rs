@@ -14,6 +14,7 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 use crate::sync::{sync_drive_items, DriveItemHandler};
 use std::collections::{BTreeMap, HashMap};
+use std::error::Error;
 use std::time::Duration;
 use rand::{thread_rng, Rng};
 use reqwest::{header, StatusCode};
@@ -81,122 +82,127 @@ struct Item {
     deleted: Option<Exists>,
 }
 
-struct ItemHandler<'a> {
-    id_map: HashMap<String, Item>,
-    bar: &'a indicatif::ProgressBar,
-    total: u64,
-}
-
-impl<'a> ItemHandler<'a> {
-
-    fn new(items: HashMap<String, Item>, total: u64, bar: &indicatif::ProgressBar) -> ItemHandler {
-        ItemHandler {
-            id_map: items,
-            bar,
-            total: total,
-        }
-    }
-
-    fn insert(&mut self, item: &Item) {
-        if let ItemType::File {..} = item.item_type {
-            self.total += item.size;
-        }
-    }
-
-    fn delete(&mut self, prev: &Item) {
-        if let ItemType::File {..} = prev.item_type {
-            let size = prev.size;
-            assert!(size <= self.total);
-            self.total -= size;
-        }
-    }
-}
-
-impl<'a> DriveItemHandler<Item> for ItemHandler<'a> {
-    fn reset(&mut self) {
-        self.total = 0;
-        self.bar.set_position(self.total);
-        self.id_map.clear();
-    }
-
-    fn handle(&mut self, item: Item) {
-        if let Some(prev) =
-            if item.deleted.is_some() {
-                self.id_map.remove(&item.id)
-            }
-            else {
-                self.insert(&item);
-                self.id_map.insert(item.id.clone(), item)
-            }
-        {
-            self.delete(&prev);
-        }
-        self.bar.set_position(self.total);
-    }
-}
-
 #[derive(Serialize,Deserialize)]
 struct DriveState {
-    delta_link: String,
     size: u64,
     items: HashMap<String, Item>,
 }
 
-struct CacheDirectory {
-    project: Option<directories::ProjectDirs>
+impl DriveState {
+    fn reset(&mut self) -> u64 {
+        self.size = 0;
+        self.items.clear();
+        self.size
+    }
+
+    fn upsert(&mut self, item: Item) -> u64 {
+        if let ItemType::File {..} = item.item_type {
+            self.size += item.size;
+        }
+        if let Some(prev) = self.items.insert(item.id.clone(), item) {
+            if let ItemType::File {..} = prev.item_type {
+                let size = prev.size;
+                assert!(size <= self.size);
+                self.size -= size;
+            };
+        };
+        self.size
+    }
+
+    fn delete(&mut self, item: Item) -> u64 {
+        if let Some(prev) = self.items.remove(&item.id) {
+            if let ItemType::File {..} = prev.item_type {
+                let size = prev.size;
+                assert!(size <= self.size);
+                self.size -= size;
+            }
+        }
+        self.size
+    }
 }
 
-impl CacheDirectory {
-    fn new() -> CacheDirectory {
-        CacheDirectory {
-            project: directories::ProjectDirs::from("Casa", "Giddy", "MSOD-stat")
-        }
-    }
+#[derive(Serialize,Deserialize)]
+struct DriveSnapshot {
+    delta_link: String,
+    #[serde(flatten)]
+    state: DriveState,
+}
 
-    fn cache_filename(&self, drive_id: &str) -> Option<std::path::PathBuf> {
-        match &self.project {
-            Some(project) => {
-                let mut cache_path = project.cache_dir().to_path_buf();
-                if let Err(_) = std::fs::create_dir_all(&cache_path) {
-                    // let a later error sort it out
-                }
-                cache_path.push(format!("drive_{}", drive_id));
-                Some(cache_path)
-            }
-            None => None
-        }
-    }
-
-    fn load(&self, drive_id: &str) -> DriveState {
-        if let Some(path) = self.cache_filename(drive_id) {
-            match std::fs::File::open(path) {
-                Ok(file) => {
-                    let reader = std::io::BufReader::new(file);
-                    match serde_cbor::from_reader(reader) {
-                        Ok(state) => return state,
-                        Err(error) => eprintln!("{}", error)
-                    }
-                }
-                Err(_) => {
-                    // file does not exist
-                }
-            }
-        }
+impl DriveSnapshot {
+    fn default(drive_id: &str) -> DriveSnapshot {
+        // an initial state that will scan entire drive
         const PREFIX: &str = "https://graph.microsoft.com/v1.0/me/drives/";
-        const SUFFIX: &str = "/root/delta?select=id,name,size,parentReference,file,folder,package,deleted";
+        const SUFFIX: &str = concat!(
+            "/root/delta",
+            "?select=id,name,size,parentReference,file,folder,package,deleted"
+        );
         let mut link = String::with_capacity(PREFIX.len() + drive_id.len() + SUFFIX.len());
         link.push_str(PREFIX);
         link.push_str(drive_id);
         link.push_str(SUFFIX);
-        DriveState {
+        DriveSnapshot {
             delta_link: link,
-            size: 0,
-            items: HashMap::new()
+            state: DriveState {
+                size: 0,
+                items: HashMap::new()
+            }
         }
     }
+}
 
-    fn save(&self, drive_id: &str, state: DriveState) {
-        if let Some(path) = self.cache_filename(drive_id) {
+fn cache_filename(project: &Option<directories::ProjectDirs>, drive_id: &str) -> Option<std::path::PathBuf> {
+    match project {
+        Some(project) => {
+            let mut cache_path = project.cache_dir().to_path_buf();
+            if let Err(_) = std::fs::create_dir_all(&cache_path) {
+                // let a later error sort it out
+            }
+            cache_path.push(format!("drive_{}", drive_id));
+            Some(cache_path)
+        }
+        None => None
+    }
+}
+
+struct Storage {
+    path: Option<std::path::PathBuf>,
+}
+
+impl Storage {
+
+    fn new(path: Option<std::path::PathBuf>) -> Storage {
+        Storage {path}
+    }
+
+    fn load<T>(&self) -> Option<T>
+        where T: serde::de::DeserializeOwned
+    {
+        if let Some(path) = &self.path {
+            match std::fs::File::open(path) {
+                Ok(file) => {
+                    let reader = std::io::BufReader::new(file);
+                    match serde_cbor::from_reader(reader) {
+                        Ok(state) => {
+                            return Some(state);
+                        }
+                        Err(error) => {
+                            // storage file corrupted
+                            eprintln!("{}\n", error);
+                        }
+                    }
+                }
+                Err(_) => {
+                    // file does not exist, don't display an error for this common state.
+                }
+            }
+        }
+        None
+    }
+
+    fn save<T>(&self, state: &T)
+        where T: serde::ser::Serialize
+    {
+        if let Some(path) = &self.path {
             let mut rng = thread_rng();
             let int = rng.gen_range(1000, 10000);
             let mut tmp_path = path.to_path_buf();
@@ -208,11 +214,11 @@ impl CacheDirectory {
                         serde_cbor::to_writer(&mut writer, &state)
                     };
                     if let Err(error) = result {
-                        eprintln!("{}", error);
+                        eprintln!("{}\n", error);
                     }
                     else {
                         if let Err(error) = std::fs::rename(&tmp_path, path){
-                            eprintln!("{}", error);
+                            eprintln!("{}\n", error);
                         }
                         else {
                             return;
@@ -220,15 +226,46 @@ impl CacheDirectory {
                     }
                     // tmp_path was created but not renamed.
                     if let Err(error) = std::fs::remove_file(&tmp_path){
-                        eprintln!("{}", error);
+                        eprintln!("{}\n", error);
                     }
                 }
                 Err(error) => {
-                    eprintln!("{}", error);
+                    eprintln!("{}\n", error);
                 }
             }
         }
     }
+}
+
+struct ItemHandler<'a> {
+    state: &'a mut DriveState,
+    bar: &'a indicatif::ProgressBar,
+}
+
+impl<'a> DriveItemHandler<Item> for ItemHandler<'a> {
+    fn reset(&mut self) {
+        let size = self.state.reset();
+        self.bar.set_position(size);
+    }
+
+    fn handle(&mut self, item: Item) {
+        let size = if item.deleted.is_some() {
+            self.state.delete(item)
+        }
+        else {
+            self.state.upsert(item)
+        };
+        self.bar.set_position(size);
+    }
+}
+
+fn sync_items(client: &reqwest::Client, mut snapshot: DriveSnapshot, bar: &indicatif::ProgressBar) -> Result<DriveSnapshot, Box<Error>> {
+    let mut handler = ItemHandler {
+        state: &mut snapshot.state,
+        bar,
+    };
+    snapshot.delta_link = sync_drive_items(client, snapshot.delta_link, &mut handler)?;
+    Ok(snapshot)
 }
 
 fn ignore_file(mime_type: &Option<String>) -> bool {
@@ -265,7 +302,7 @@ fn analyze_items(item_map: &HashMap<String, Item>)
                 let dirname = match &item.parent {
                     Some(parent) => parent.path.trim_start_matches("/drive/root:/"),
                     None => {
-                        eprintln!("Ignoring item due to missing or invalid 'parentReference': {:?}", item);
+                        eprintln!("Ignoring item due to missing or invalid 'parentReference': {:?}\n", item);
                         continue;
                     }
                 };
@@ -275,7 +312,7 @@ fn analyze_items(item_map: &HashMap<String, Item>)
                 let sha1 = match hashes {
                     Some(hash) => &hash.sha,
                     None => {
-                        eprintln!("Ignoring item due to missing or invalid 'sha1': {:?}", hashes);
+                        eprintln!("Ignoring item due to missing or invalid 'sha1': {:?}\n", hashes);
                         continue;
                     }
                 };
@@ -296,7 +333,7 @@ fn analyze_items(item_map: &HashMap<String, Item>)
 }
 
 fn main() {
-    let cache_dir = CacheDirectory::new();
+    let project_dirs = directories::ProjectDirs::from("Casa", "Giddy", "MSOD-stat");
     let token = auth::authenticate(CLIENT_ID.to_owned(), CLIENT_SECRET.to_owned()).unwrap();
     let mut headers = header::HeaderMap::new();
     headers.insert(
@@ -357,13 +394,13 @@ fn main() {
             .template("Fetching drive data: [{elapsed_precise}] {wide_bar} {percent}%")
             .progress_chars("#>-"));
         bar.enable_steady_tick(100);
-        let state = cache_dir.load(drive_id);
-        bar.set_position(state.size);
-        let mut handler = ItemHandler::new(state.items, state.size, &bar);
-        let delta_link = sync_drive_items(&client, state.delta_link, &mut handler).unwrap();
+        let cache = Storage::new(cache_filename(&project_dirs, drive_id));
+        let snapshot = cache.load().unwrap_or_else(|| DriveSnapshot::default(drive_id));
+        bar.set_position(snapshot.state.size);
+        let snapshot = sync_items(&client, snapshot, &bar).unwrap();
+        cache.save(&snapshot);
         bar.finish_and_clear();
-        let item_map = handler.id_map;
-        let (file_count, folder_count, size_map) = analyze_items(&item_map);
+        let (file_count, folder_count, size_map) = analyze_items(&snapshot.state.items);
         println!("folders:{:>10}", folder_count);
         println!("files:  {:>10}", file_count);
         println!("duplicates:");
@@ -377,12 +414,6 @@ fn main() {
                 }
             }
         }
-        let state = DriveState {
-            delta_link: delta_link,
-            size: handler.total,
-            items: item_map,
-        };
-        cache_dir.save(drive_id, state);
     }
 }
 
