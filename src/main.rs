@@ -35,18 +35,14 @@ const REQWEST_VERSION: &str = "0.9.11";
 const CLIENT_ID: &str = "6612d641-e7d8-4d39-8dac-e6f21efe1bf4";
 const CLIENT_SECRET: &str = "ubnDYPYV4019]pentXO1~[=";
 
-fn cache_filename(project: &Option<directories::ProjectDirs>, drive_id: &str) -> Option<std::path::PathBuf> {
-    match project {
-        Some(project) => {
-            let mut cache_path = project.cache_dir().to_path_buf();
-            if let Err(_) = std::fs::create_dir_all(&cache_path) {
-                // let a later error sort it out
-            }
-            cache_path.push(format!("drive_{}", drive_id));
-            Some(cache_path)
-        }
-        None => None
+fn cache_filename(project: &directories::ProjectDirs, drive_id: &str) -> std::path::PathBuf {
+    let mut cache_path = project.cache_dir().to_path_buf();
+    if let Err(_) = std::fs::create_dir_all(&cache_path) {
+        // let a later error sort it out
     }
+    cache_path.push(format!("drive_{}", drive_id));
+    cache_path.set_extension("cbor");
+    cache_path
 }
 
 struct ItemHandler<'a> {
@@ -206,7 +202,7 @@ fn main() {
             .template("Fetching drive data: [{elapsed_precise}] {wide_bar} {percent}%")
             .progress_chars("#>-"));
         bar.enable_steady_tick(100);
-        let cache = Storage::new(cache_filename(&project_dirs, drive_id));
+        let cache = Storage::new(project_dirs.as_ref().map(|dir| cache_filename(dir, drive_id)));
         let snapshot = cache.load().unwrap_or_else(|| DriveSnapshot::default(drive_id));
         bar.set_position(snapshot.state.size);
         let snapshot = sync_items(&client, snapshot, &bar).unwrap();
