@@ -1,17 +1,19 @@
+use std::marker::PhantomData;
 use rand::{thread_rng, Rng};
 
 
-pub struct Storage {
+pub struct Storage<T> {
     path: Option<std::path::PathBuf>,
+    _phantom: PhantomData<fn(T) -> T>,  // Same type must be saved and loaded at this path
 }
 
-impl Storage {
+impl<T> Storage<T> {
 
-    pub fn new(path: Option<std::path::PathBuf>) -> Storage {
-        Storage {path}
+    pub fn new(path: Option<std::path::PathBuf>) -> Storage<T> {
+        Storage {path, _phantom: PhantomData}
     }
 
-    pub fn load<T>(&self) -> Option<T>
+    pub fn load(&self) -> Option<T>
         where T: serde::de::DeserializeOwned
     {
         if let Some(path) = &self.path {
@@ -36,7 +38,7 @@ impl Storage {
         None
     }
 
-    pub fn save<T>(&self, state: &T)
+    pub fn save(&self, state: &T)
         where T: serde::ser::Serialize
     {
         if let Some(path) = &self.path {
