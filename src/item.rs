@@ -21,9 +21,7 @@ pub struct Parent {
 pub enum ItemType {
     #[serde(rename = "file")]
     File {
-        // Never seen a file without a mimeType, but the existence of the `processingMetadata`
-        // attribute at https://docs.microsoft.com/en-us/onedrive/developer/rest-api/resources/file
-        // suggests that it might happen
+        // Deleted files have an empty "file" object so all fields must be optional.
         #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
         mime_type: Option<String>,
         // OneNote files do not have hashes

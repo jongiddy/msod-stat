@@ -1,3 +1,4 @@
+use serde_json::Value;
 use std::error::Error;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -48,6 +49,19 @@ struct SyncPage<DriveItem> {
     link: SyncLink,
 }
 
+macro_rules! retry_or_panic {
+    ( $count:ident, $message:expr ) => {
+        if $count < 3 {
+            $count += 1;
+            // extra newline to avoid overwrite by progress bar
+            eprintln!("Retry After: 30 ({})\n", $message);
+            std::thread::sleep(Duration::from_secs(30));
+        } else {
+            panic!($message);
+        }
+    }
+}
+
 fn fetch_items<DriveItem>(
     client: &reqwest::Client,
     mut link: String,
@@ -55,37 +69,41 @@ fn fetch_items<DriveItem>(
 ) -> String
     where DriveItem: serde::de::DeserializeOwned
 {
+    let mut fail_count = 0;
     loop {
         match get(&client, &link) {
             Err(error) => {
                 eprintln!("{}", error);
-                panic!("Error fetching items");
+                retry_or_panic!(fail_count, "Error fetching items");
             }
             Ok(mut response) => match response.status() {
                 StatusCode::OK => {
                     match response.text() {
                         Ok(text) => {
-                            let page: SyncPage<DriveItem> = match serde_json::from_str(&text) {
-                                Ok(page) => page,
+                            match serde_json::from_str::<SyncPage<DriveItem>>(&text) {
+                                Ok(page) => {
+                                    sender.send(Some(page.value)).unwrap();
+                                    match page.link {
+                                        SyncLink::More(next) => {
+                                            fail_count = 0;
+                                            link = next;
+                                        },
+                                        SyncLink::Done(delta) => {
+                                            return delta;
+                                        }
+                                    }
+                                }
                                 Err(error) => {
-                                    eprintln!("{}", text);
                                     eprintln!("{}", error);
-                                    panic!("Could not deserialize sync page")
+                                    eprintln!("{}", text);
+                                    retry_or_panic!(fail_count, "Could not deserialize sync page");
                                 }
                             };
-                            sender.send(Some(page.value)).unwrap();
-                            match page.link {
-                                SyncLink::More(next) => {
-                                    link = next;
-                                },
-                                SyncLink::Done(delta) => {
-                                    return delta;
-                                }
-                            }
                         }
                         Err(error) => {
                             // error receiving full response, try again with same link
                             eprintln!("{}", error);
+                            retry_or_panic!(fail_count, "Partial response");
                         }
                     }
                 },
@@ -96,21 +114,54 @@ fn fetch_items<DriveItem>(
                     eprintln!("Delta link failed, restarting sync...");
                     // Send None to indicate that the DriveItemHandler should be reset
                     sender.send(None).unwrap();
+                    fail_count = 0;
                     link = response.headers().get("Location").unwrap().to_str().unwrap().to_owned();
-                }
+                },
                 status => {
+                    eprintln!("Response {:?} {}", status, status.canonical_reason().unwrap());
+                    match response.text() {
+                        Ok(text) => {
+                            match serde_json::from_str::<Value>(&text) {
+                                Ok(page) => {
+                                    match page.get("error") {
+                                        Some(error) => {
+                                            if let Some(code) = error.get("code").and_then(Value::as_str) {
+                                                eprintln!("Code: {}", code);
+                                            }
+                                            if let Some(message) = error.get("message").and_then(Value::as_str) {
+                                                if message.len() > 0 {
+                                                    eprintln!("Message: {}", message);
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            eprintln!("Text: {:?}", text);
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    eprintln!("Text: {:?}", text);
+                                    eprintln!("{}", error);
+                                }
+                            };
+                        }
+                        Err(error) => {
+                            eprintln!("Response: {:?}", response);
+                            eprintln!("{}", error);
+                        }
+                    }
                     // If the server returns a Retry-After header, then everything appears OK with
                     // the request, we just need to slow down.
                     // https://docs.microsoft.com/onedrive/developer/rest-api/concepts/scan-guidance#what-happens-when-you-get-throttled
                     match response.headers().get("Retry-After") {
                         Some(value) => {
                             let s = value.to_str().unwrap();
-                            eprintln!("Status {:?}, Retry-After: {}\n", status, s);
+                            eprintln!("Retry-After: {}\n", s);
                             let delay = s.parse().unwrap();
                             std::thread::sleep(Duration::from_secs(delay));
                         }
                         None => {
-                            panic!("{:?} {}", status, status.canonical_reason().unwrap());
+                            retry_or_panic!(fail_count, "Unexpected response");
                         }
                     }
                 }
