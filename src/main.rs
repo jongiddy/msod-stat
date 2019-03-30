@@ -30,8 +30,20 @@ const CRATE_NAME: Option<&str> = option_env!("CARGO_PKG_NAME");
 const CRATE_VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
 const REQWEST_VERSION: &str = "0.9.11";
 
-// Making the OAuth2 client secret public is secure because PKCE ensures
-// that only the originator can use the authorization code.
+// Read this before writing your own code that reveals the OAuth2 client secret!
+// There are two ways to use an OAuth2 client secret to obtain unauthorized access:
+//
+// 1. Use the client credentials flow - simply login in with the client id and secret to obtain an
+// access token. To prevent this being a problem, ensure that the client credentials give no access.
+// In the Microsoft Graph interface, Application Permissions provide the allowed scopes for client
+// credential login. Do not allow any Application Permissions! Use Delegated permissions only.
+//
+// 2. Intercept an authorization code redirect, and then use the authorization code and the client
+// secret to obtain an access token. This code uses PKCE to prevent this. Any request using the
+// authorization code and client secret must also provide the PKCE code verifier, which is kept
+// secret. The client secret doesn't add any security when using PKCE, but Microsoft Graph does not
+// support the authorization code flow without it.
+//
 const CLIENT_ID: &str = "6612d641-e7d8-4d39-8dac-e6f21efe1bf4";
 const CLIENT_SECRET: &str = "ubnDYPYV4019]pentXO1~[=";
 
