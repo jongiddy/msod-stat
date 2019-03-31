@@ -52,9 +52,16 @@ fn cache_filename(project: &directories::ProjectDirs, drive_id: &str) -> std::pa
     if let Err(_) = std::fs::create_dir_all(&cache_path) {
         // let a later error sort it out
     }
-    cache_path.push(format!("drive_{}", drive_id));
+    // Increment the number after `drive` when the serialized format changes
+    cache_path.push(format!("drive1_{}", drive_id));
     cache_path.set_extension("cbor");
     cache_path
+}
+
+#[derive(PartialEq, Eq, Hash)]
+enum ItemHash {
+    Sha1(String),
+    QuickXor(String),
 }
 
 struct ItemHandler<'a> {
@@ -100,18 +107,18 @@ fn ignore_path(dirname: &str, basename: &str) -> bool {
     basename.ends_with(".svn-base") && dirname.contains("/.svn/pristine/")
 }
 
-fn analyze_items(item_map: &HashMap<String, Item>)
-    -> (u32, u32, BTreeMap<u64, HashMap<String, Vec<String>>>)
+fn analyze_items(names_by_hash: &HashMap<String, Item>)
+    -> (u32, u32, BTreeMap<u64, HashMap<ItemHash, Vec<String>>>)
 {
-    let mut size_map = BTreeMap::<u64, HashMap<String, Vec<String>>>::new();
+    let mut names_by_hash_by_size = BTreeMap::<u64, HashMap<ItemHash, Vec<String>>>::new();
     let mut file_count = 0;
     let mut folder_count = 0;
-    let bar = indicatif::ProgressBar::new(item_map.len() as u64);
+    let bar = indicatif::ProgressBar::new(names_by_hash.len() as u64);
     bar.set_style(indicatif::ProgressStyle::default_bar()
         .template("Analyzing duplicates: [{elapsed_precise}] {wide_bar} {percent}%")
         .progress_chars("#>-"));
     bar.tick();
-    for item in item_map.values() {
+    for item in names_by_hash.values() {
         bar.inc(1);
         match &item.item_type {
             ItemType::File { mime_type, hashes } => {
@@ -119,27 +126,50 @@ fn analyze_items(item_map: &HashMap<String, Item>)
                 if ignore_file(&mime_type) {
                     continue;
                 }
-                let dirname = match &item.parent {
-                    Some(parent) => parent.path.trim_start_matches("/drive/root:/"),
-                    None => {
-                        eprintln!("Ignoring item due to missing or invalid 'parentReference': {:?}\n", item);
-                        continue;
-                    }
-                };
+                let dirname = item.parent.path.trim_start_matches("/drive/root:/");
                 if ignore_path(dirname, &item.name) {
                     continue;
                 }
-                let sha1 = match hashes {
-                    Some(hash) => &hash.sha,
+                let hash = match hashes {
+                    Some(hashes) => {
+                        match item.parent.drive_type.as_ref() {
+                            "personal" => {
+                                match hashes.sha {
+                                    Some(ref sha) => {
+                                        ItemHash::Sha1(sha.clone())
+                                    }
+                                    None => {
+                                        eprintln!("Ignoring item due to missing sha1 hash: {:?}\n", item);
+                                        continue;
+                                    }
+                                }
+                            },
+                            "business" | "documentLibrary" => {
+                                match hashes.xor {
+                                    Some(ref xor) => {
+                                        ItemHash::QuickXor(xor.clone())
+                                    }
+                                    None => {
+                                        eprintln!("Ignoring item due to missing quickXor hash: {:?}\n", item);
+                                        continue;
+                                    }
+                                }
+                            },
+                            _ => {
+                                eprintln!("Ignoring item due to unknown drive_type: {:?}\n", item);
+                                continue;
+                            }
+                        }
+                    }
                     None => {
-                        eprintln!("Ignoring item due to missing or invalid 'sha1': {:?}\n", hashes);
+                        eprintln!("Ignoring item due to missing hashes: {:?}\n", hashes);
                         continue;
                     }
                 };
-                let sha_map = size_map.entry(item.size).or_insert_with(HashMap::<String, Vec<String>>::new);
+                let names_by_hash = names_by_hash_by_size.entry(item.size).or_insert_with(HashMap::<ItemHash, Vec<String>>::new);
                 // allocating the key only on insert is messy - we could use raw_entry here,
                 // or maybe entry_ref() will exist one day - for now, always allocate
-                let v = sha_map.entry(sha1.to_owned()).or_insert_with(Vec::<String>::new);
+                let v = names_by_hash.entry(hash).or_insert_with(Vec::<String>::new);
                 let name = format!("{}/{}", dirname, item.name);
                 v.push(name);
             }
@@ -149,7 +179,7 @@ fn analyze_items(item_map: &HashMap<String, Item>)
         }
     }
     bar.finish_and_clear();
-    (file_count, folder_count, size_map)
+    (file_count, folder_count, names_by_hash_by_size)
 }
 
 fn main() {
@@ -220,12 +250,12 @@ fn main() {
         let snapshot = sync_items(&client, snapshot, &bar).unwrap();
         cache.save(&snapshot);
         bar.finish_and_clear();
-        let (file_count, folder_count, size_map) = analyze_items(&snapshot.state.items);
+        let (file_count, folder_count, names_by_hash_by_size) = analyze_items(&snapshot.state.items);
         println!("folders:{:>10}", folder_count);
         println!("files:  {:>10}", file_count);
         println!("duplicates:");
-        for (size, sha_map) in size_map.iter().rev() {
-            for names in sha_map.values() {
+        for (size, names_by_hash) in names_by_hash_by_size.iter().rev() {
+            for names in names_by_hash.values() {
                 if names.len() > 1 {
                     println!("{}", size_as_string(*size));
                     for name in names {

@@ -1,6 +1,7 @@
 # msod-stat
 Display useful information about OneDrive, including total disk usage and duplicate files.
-Currently only works on OneDrive Personal.
+
+This has only been tested on OneDrive Personal, but should work for OneDrive Business and Document Libraries.
 
 Example run:
 

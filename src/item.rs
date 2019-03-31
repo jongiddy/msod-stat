@@ -8,13 +8,17 @@ pub struct Exists {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Hash {
-    #[serde(rename = "sha1Hash")]
-    pub sha: String
+    #[serde(rename = "sha1Hash", default, skip_serializing_if = "Option::is_none")]
+    pub sha: Option<String>,
+    #[serde(rename = "quickXorHash", default, skip_serializing_if = "Option::is_none")]
+    pub xor: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Parent {
-    pub path: String
+    pub path: String,
+    #[serde(rename = "driveType")]
+    pub drive_type: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -40,8 +44,8 @@ pub struct Item {
     pub name: String,
     #[serde(default)]  // a deleted item has no size, use 0
     pub size: u64,
-    #[serde(rename = "parentReference", default, skip_serializing_if = "Option::is_none")]
-    pub parent: Option<Parent>,
+    #[serde(rename = "parentReference")]
+    pub parent: Parent,
     #[serde(flatten)]  // item_type replaced in serialization with one of file, folder, package
     pub item_type: ItemType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
