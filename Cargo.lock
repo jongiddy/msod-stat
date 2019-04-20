@@ -733,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "msod-stat"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "directories 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "failure 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",

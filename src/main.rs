@@ -28,7 +28,6 @@ use oauth2::TokenResponse;
 
 const CRATE_NAME: Option<&str> = option_env!("CARGO_PKG_NAME");
 const CRATE_VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
-const REQWEST_VERSION: &str = "0.9.11";
 
 // Read this before writing your own code that reveals the OAuth2 client secret!
 // There are two ways to use an OAuth2 client secret to obtain unauthorized access:
@@ -190,10 +189,9 @@ fn main() {
         header::USER_AGENT,
         header::HeaderValue::from_str(
             &format!(
-                "{}/{} reqwest/{}",
+                "{}/{}",
                 CRATE_NAME.unwrap_or("msod-stat"),
                 CRATE_VERSION.unwrap_or("unknown"),
-                REQWEST_VERSION,
             )
         ).unwrap());
     match token.token_type() {
