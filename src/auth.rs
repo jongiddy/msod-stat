@@ -26,7 +26,7 @@ use url::Url;
 
 
 fn extract_authorization_code<'a>(url: &'a Url, csrf_token: &CsrfToken)
-    -> Result<std::borrow::Cow<'a, str>, Box<Error>>
+    -> Result<std::borrow::Cow<'a, str>, Box<dyn Error>>
 {
     // Looking for
     // /redirect?code=Mac..dc6&state=DL7jz5YIW4WusaYdDZrXzA%3d%3d
@@ -71,7 +71,7 @@ fn extract_authorization_code<'a>(url: &'a Url, csrf_token: &CsrfToken)
     }
 }
 
-fn handle_request(request: Request, csrf_token: &CsrfToken) -> Result<String, Box<Error>> {
+fn handle_request(request: Request, csrf_token: &CsrfToken) -> Result<String, Box<dyn Error>> {
     let err = match request.method() {
         Method::Get => {
             let base = Url::parse("http://localhost:3003/")?;
@@ -110,7 +110,7 @@ fn handle_request(request: Request, csrf_token: &CsrfToken) -> Result<String, Bo
 fn get_authorization_code(
     server: &Server,
     csrf_token: CsrfToken,
-) -> Result<String, Box<Error>> {
+) -> Result<String, Box<dyn Error>> {
     for request in server.incoming_requests() {
         match handle_request(request, &csrf_token) {
             Ok(code) => {
@@ -160,7 +160,7 @@ fn start_server() -> Result<Server, Box<dyn Error>> {
 }
 
 pub fn authenticate(client_id: String, client_secret: String)
-    -> Result<BasicTokenResponse, Box<Error>>
+    -> Result<BasicTokenResponse, Box<dyn Error>>
 {
     let ms_graph_authorize_url = AuthUrl::new(
         Url::parse("https://login.microsoftonline.com/common/oauth2/v2.0/authorize")?

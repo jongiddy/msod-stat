@@ -26,3 +26,4 @@ duplicates:
 	Pictures/Photos/2008/P1010769.MOV
 ```
 
+On Ubuntu 20.04 ensure `libcurl` is available: `sudo apt-get install libcurl4-openssl-dev`.

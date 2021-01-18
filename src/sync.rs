@@ -14,7 +14,7 @@ pub trait DriveItemHandler<DriveItem> {
     fn handle(&mut self, item: DriveItem);
 }
 
-fn get(client: &reqwest::Client, uri: &str) -> Result<reqwest::Response, Box<Error>> {
+fn get(client: &reqwest::Client, uri: &str) -> Result<reqwest::Response, Box<dyn Error>> {
     let mut retries = 3;
     let mut delay = 1;
     loop {
@@ -174,7 +174,7 @@ pub fn sync_drive_items<DriveItem: 'static>(
     client: &reqwest::Client,
     link: String,
     handler: &mut impl DriveItemHandler<DriveItem>
-) -> Result<String, Box<Error>>
+) -> Result<String, Box<dyn Error>>
 where DriveItem: Send + serde::de::DeserializeOwned
 {
     let (sender, receiver) = mpsc::channel::<Option<Vec<DriveItem>>>();

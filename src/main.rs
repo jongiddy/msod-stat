@@ -85,7 +85,7 @@ impl<'a> DriveItemHandler<Item> for ItemHandler<'a> {
     }
 }
 
-fn sync_items(client: &reqwest::Client, mut snapshot: DriveSnapshot, bar: &indicatif::ProgressBar) -> Result<DriveSnapshot, Box<Error>> {
+fn sync_items(client: &reqwest::Client, mut snapshot: DriveSnapshot, bar: &indicatif::ProgressBar) -> Result<DriveSnapshot, Box<dyn Error>> {
     let mut handler = ItemHandler {
         state: &mut snapshot.state,
         bar,
