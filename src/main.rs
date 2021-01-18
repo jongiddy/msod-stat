@@ -125,7 +125,13 @@ fn analyze_items(names_by_hash: &HashMap<String, Item>)
                 if ignore_file(&mime_type) {
                     continue;
                 }
-                let dirname = item.parent.path.trim_start_matches("/drive/root:/");
+                let dirname = match item.parent.path {
+                    None => {
+                        // deleted parent
+                        continue;
+                    },
+                    Some(ref path) => path.trim_start_matches("/drive/root:/")
+                };
                 if ignore_path(dirname, &item.name) {
                     continue;
                 }

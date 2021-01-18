@@ -16,7 +16,9 @@ pub struct Hash {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Parent {
-    pub path: String,
+    // Deleted parent may have no path
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     #[serde(rename = "driveType")]
     pub drive_type: String,
 }
