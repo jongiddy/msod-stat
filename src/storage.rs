@@ -43,7 +43,7 @@ impl<T> Storage<T> {
     {
         if let Some(path) = &self.path {
             let mut rng = thread_rng();
-            let int = rng.gen_range(1000, 10000);
+            let int = rng.gen_range(1000..10000);
             let mut tmp_path = path.to_path_buf();
             assert!(tmp_path.set_extension(int.to_string()));
             match std::fs::File::create(&tmp_path) {
