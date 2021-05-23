@@ -29,30 +29,21 @@ use oauth2::TokenResponse;
 const CRATE_NAME: Option<&str> = option_env!("CARGO_PKG_NAME");
 const CRATE_VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
 
-// Read this before writing your own code that reveals the OAuth2 client secret!
-// There are two ways to use an OAuth2 client secret to obtain unauthorized access:
-//
-// 1. Use the client credentials flow - simply login in with the client id and secret to obtain an
-// access token. To prevent this being a problem, ensure that the client credentials give no access.
-// In the Microsoft Graph interface, Application Permissions provide the allowed scopes for client
-// credential login. Do not allow any Application Permissions! Use Delegated permissions only.
-//
-// 2. Intercept an authorization code redirect, and then use the authorization code and the client
-// secret to obtain an access token. This code uses PKCE to prevent this. Any request using the
-// authorization code and client secret must also provide the PKCE code verifier, which is kept
-// secret. The client secret doesn't add any security when using PKCE, but Microsoft Graph does not
-// support the authorization code flow without it.
-//
-const CLIENT_ID: &str = "6612d641-e7d8-4d39-8dac-e6f21efe1bf4";
-const CLIENT_SECRET: &str = "ubnDYPYV4019]pentXO1~[=";
+// To replace this client ID, register a Public client/native application in Azure Active Directory.
+// See https://docs.microsoft.com/azure/active-directory/develop/quickstart-register-app
+// Under `Authentication` set the redirect URI to `http://localhost/redirect` and enable `Allow public client flows`.
+// Under `API permissions` add Microsoft Graph delegated permission `Files.Read.All`.
+// Add the `Application (client) ID` as the `CLIENT_ID` below.
+const CLIENT_ID: &str = "3a139972-0147-433a-9ab8-faa3dd1b9eb5";
 
 fn cache_filename(project: &directories::ProjectDirs, drive_id: &str) -> std::path::PathBuf {
     let mut cache_path = project.cache_dir().to_path_buf();
     if let Err(_) = std::fs::create_dir_all(&cache_path) {
         // let a later error sort it out
     }
-    // Increment the number after `drive` when the serialized format changes
-    cache_path.push(format!("drive1_{}", drive_id));
+    // Increment the number after `drive` when the serialized format changes.
+    // 2021-05-23 - updated to 2 because the original delta link format is no longer valid
+    cache_path.push(format!("drive2_{}", drive_id));
     cache_path.set_extension("cbor");
     cache_path
 }
@@ -189,7 +180,7 @@ fn analyze_items(names_by_hash: &HashMap<String, Item>)
 
 fn main() {
     let project_dirs = directories::ProjectDirs::from("Casa", "Giddy", "MSOD-stat");
-    let token = auth::authenticate(CLIENT_ID.to_owned(), CLIENT_SECRET.to_owned()).unwrap();
+    let token = auth::authenticate(CLIENT_ID.to_owned()).unwrap();
     let mut headers = header::HeaderMap::new();
     headers.insert(
         header::USER_AGENT,

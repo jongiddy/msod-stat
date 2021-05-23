@@ -9,7 +9,6 @@ use oauth2::{
     AuthType,
     AuthUrl,
     ClientId,
-    ClientSecret,
     CsrfToken,
     PkceCodeVerifierS256,
     RedirectUrl,
@@ -126,9 +125,10 @@ fn get_authorization_code(
 }
 
 fn start_server() -> Result<Server, Box<dyn Error>> {
-    // MS Graph requires an exact match for the redirect URL. To reduce the chance of failing
-    // if a fixed port is in use, we try 8 different ports. The MS app must have 8 registered
-    // Redirect URI's: http://localhost:<port>/redirect for each value of <port>
+    // Originally MS Graph required an exact match for the redirect URL, including the port.
+    // To reduce the chance of failing with a fixed port, we used 8 different ports. Now, the
+    // port is not considered for a valid Redirect URI, so it can be set to
+    // http://localhost/redirect, but we haven't yet modified this code to try more ports.
     let mut ports: [u16; 8] = [3003, 17465, 22496, 23620, 25243, 27194, 28207, 32483];
     // Select ports in random order to prevent herding and add a bit of security through
     // non-deterministic behavior.
@@ -159,7 +159,7 @@ fn start_server() -> Result<Server, Box<dyn Error>> {
     Err(string_error::static_err("Could not find an available port"))
 }
 
-pub fn authenticate(client_id: String, client_secret: String)
+pub fn authenticate(client_id: String)
     -> Result<BasicTokenResponse, Box<dyn Error>>
 {
     let ms_graph_authorize_url = AuthUrl::new(
@@ -177,7 +177,7 @@ pub fn authenticate(client_id: String, client_secret: String)
     let client =
         BasicClient::new(
             ClientId::new(client_id),
-            Some(ClientSecret::new(client_secret)),
+            None,
             ms_graph_authorize_url,
             ms_graph_token_url
         )
