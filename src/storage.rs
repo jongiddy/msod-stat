@@ -1,20 +1,22 @@
-use std::marker::PhantomData;
 use rand::{thread_rng, Rng};
-
+use std::marker::PhantomData;
 
 pub struct Storage<T> {
     path: Option<std::path::PathBuf>,
-    _phantom: PhantomData<fn(T) -> T>,  // Same type must be saved and loaded at this path
+    _phantom: PhantomData<fn(T) -> T>, // Same type must be saved and loaded at this path
 }
 
 impl<T> Storage<T> {
-
     pub fn new(path: Option<std::path::PathBuf>) -> Storage<T> {
-        Storage {path, _phantom: PhantomData}
+        Storage {
+            path,
+            _phantom: PhantomData,
+        }
     }
 
     pub fn load(&self) -> Option<T>
-        where T: serde::de::DeserializeOwned
+    where
+        T: serde::de::DeserializeOwned,
     {
         if let Some(path) = &self.path {
             match std::fs::File::open(path) {
@@ -39,7 +41,8 @@ impl<T> Storage<T> {
     }
 
     pub fn save(&self, state: &T)
-        where T: serde::ser::Serialize
+    where
+        T: serde::ser::Serialize,
     {
         if let Some(path) = &self.path {
             let mut rng = thread_rng();
@@ -54,17 +57,15 @@ impl<T> Storage<T> {
                     };
                     if let Err(error) = result {
                         eprintln!("{}\n", error);
-                    }
-                    else {
-                        if let Err(error) = std::fs::rename(&tmp_path, path){
+                    } else {
+                        if let Err(error) = std::fs::rename(&tmp_path, path) {
                             eprintln!("{}\n", error);
-                        }
-                        else {
+                        } else {
                             return;
                         }
                     }
                     // tmp_path was created but not renamed.
-                    if let Err(error) = std::fs::remove_file(&tmp_path){
+                    if let Err(error) = std::fs::remove_file(&tmp_path) {
                         eprintln!("{}\n", error);
                     }
                 }

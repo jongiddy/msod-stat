@@ -1,19 +1,22 @@
+use oauth2::basic::{BasicClient, BasicTokenResponse};
+use oauth2::reqwest::http_client;
+use oauth2::{
+    AuthType, AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl,
+    Scope, TokenUrl,
+};
+use open;
+use rand::seq::SliceRandom;
+use rand::thread_rng;
 use std::error::Error;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use oauth2::{AuthType, AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope, TokenUrl};
-use oauth2::basic::{BasicClient, BasicTokenResponse};
-use oauth2::reqwest::http_client;
-use open;
-use rand::thread_rng;
-use rand::seq::SliceRandom;
-use tiny_http::{Server, Request, Response, Method, StatusCode};
+use tiny_http::{Method, Request, Response, Server, StatusCode};
 use url::Url;
 
-
-fn extract_authorization_code<'a>(url: &'a Url, csrf_token: &CsrfToken)
-    -> Result<std::borrow::Cow<'a, str>, Box<dyn Error>>
-{
+fn extract_authorization_code<'a>(
+    url: &'a Url,
+    csrf_token: &CsrfToken,
+) -> Result<std::borrow::Cow<'a, str>, Box<dyn Error>> {
     // Looking for
     // /redirect?code=Mac..dc6&state=DL7jz5YIW4WusaYdDZrXzA%3d%3d
     let mut received_code = None;
@@ -25,15 +28,18 @@ fn extract_authorization_code<'a>(url: &'a Url, csrf_token: &CsrfToken)
                     return Err(string_error::static_err("Duplicate code"));
                 }
                 received_code = Some(pair.1);
-            },
+            }
             "state" => {
                 if received_state.is_some() {
                     return Err(string_error::static_err("Duplicate state"));
                 }
                 received_state = Some(pair.1);
-            },
+            }
             parameter => {
-                return Err(string_error::into_err(format!("Unexpected parameter: {}", parameter)));
+                return Err(string_error::into_err(format!(
+                    "Unexpected parameter: {}",
+                    parameter
+                )));
             }
         }
     }
@@ -48,12 +54,8 @@ fn extract_authorization_code<'a>(url: &'a Url, csrf_token: &CsrfToken)
         }
     }
     match received_code {
-        None => {
-            Err(string_error::static_err("No authorization code received"))
-        }
-        Some(code) => {
-            Ok(code)
-        }
+        None => Err(string_error::static_err("No authorization code received")),
+        Some(code) => Ok(code),
     }
 }
 
@@ -69,24 +71,19 @@ fn handle_request(request: Request, csrf_token: &CsrfToken) -> Result<String, Bo
                         if let Err(respond_err) = request.respond(response) {
                             eprintln!("Error sending HTTP response: {}", respond_err);
                         }
-                        return Ok(code.into_owned())
+                        return Ok(code.into_owned());
                     }
-                    Err(err) => {
-                        err
-                    }
+                    Err(err) => err,
                 }
-            }
-            else {
+            } else {
                 string_error::into_err(format!("Unrecognized path: {}", request.url()))
             }
         }
-        _ => {
-            string_error::into_err(format!("Unsupported method: {}", request.method()))
-        }
+        _ => string_error::into_err(format!("Unsupported method: {}", request.method())),
     };
     let status_code = StatusCode(404);
-    let response = Response::from_string(status_code.default_reason_phrase())
-        .with_status_code(status_code);
+    let response =
+        Response::from_string(status_code.default_reason_phrase()).with_status_code(status_code);
     if let Err(respond_err) = request.respond(response) {
         eprintln!("Error sending HTTP response: {}", respond_err);
     }
@@ -108,7 +105,9 @@ fn get_authorization_code(
         }
     }
 
-    Err(string_error::static_err("No more incoming connections and auth code not supplied"))
+    Err(string_error::static_err(
+        "No more incoming connections and auth code not supplied",
+    ))
 }
 
 fn start_server() -> Result<Server, Box<dyn Error>> {
@@ -131,8 +130,7 @@ fn start_server() -> Result<Server, Box<dyn Error>> {
                     Ok(io_err) => {
                         if io_err.kind() == io::ErrorKind::AddrInUse {
                             // try next port
-                        }
-                        else {
+                        } else {
                             return Err(io_err);
                         }
                     }
@@ -146,30 +144,24 @@ fn start_server() -> Result<Server, Box<dyn Error>> {
     Err(string_error::static_err("Could not find an available port"))
 }
 
-pub fn authenticate(client_id: String)
-    -> Result<BasicTokenResponse, Box<dyn Error>>
-{
-    let ms_graph_authorize_url = AuthUrl::new(
-        "https://login.microsoftonline.com/common/oauth2/v2.0/authorize".to_string()
-    )?;
-    let ms_graph_token_url = Some(
-        TokenUrl::new(
-            "https://login.microsoftonline.com/common/oauth2/v2.0/token".to_string()
-        )?
-    );
+pub fn authenticate(client_id: String) -> Result<BasicTokenResponse, Box<dyn Error>> {
+    let ms_graph_authorize_url =
+        AuthUrl::new("https://login.microsoftonline.com/common/oauth2/v2.0/authorize".to_string())?;
+    let ms_graph_token_url = Some(TokenUrl::new(
+        "https://login.microsoftonline.com/common/oauth2/v2.0/token".to_string(),
+    )?);
 
     let server = start_server()?;
     let redirect_url = format!("http://localhost:{}/redirect", server.server_addr().port());
 
-    let client =
-        BasicClient::new(
-            ClientId::new(client_id),
-            None,
-            ms_graph_authorize_url,
-            ms_graph_token_url
-        )
-        .set_auth_type(AuthType::RequestBody)
-        .set_redirect_uri(RedirectUrl::new(redirect_url)?);
+    let client = BasicClient::new(
+        ClientId::new(client_id),
+        None,
+        ms_graph_authorize_url,
+        ms_graph_token_url,
+    )
+    .set_auth_type(AuthType::RequestBody)
+    .set_redirect_uri(RedirectUrl::new(redirect_url)?);
 
     // Setup PKCE code challenge
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();

@@ -1,5 +1,5 @@
+use serde_derive::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde_derive::{Serialize,Deserialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Exists {
@@ -10,7 +10,11 @@ pub struct Exists {
 pub struct Hash {
     #[serde(rename = "sha1Hash", default, skip_serializing_if = "Option::is_none")]
     pub sha: Option<String>,
-    #[serde(rename = "quickXorHash", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "quickXorHash",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub xor: Option<String>,
 }
 
@@ -32,7 +36,7 @@ pub enum ItemType {
         mime_type: Option<String>,
         // OneNote files do not have hashes
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        hashes: Option<Hash>
+        hashes: Option<Hash>,
     },
     #[serde(rename = "folder")]
     Folder {},
@@ -44,17 +48,17 @@ pub enum ItemType {
 pub struct Item {
     pub id: String,
     pub name: String,
-    #[serde(default)]  // a deleted item has no size, use 0
+    #[serde(default)] // a deleted item has no size, use 0
     pub size: u64,
     #[serde(rename = "parentReference")]
     pub parent: Parent,
-    #[serde(flatten)]  // item_type replaced in serialization with one of file, folder, package
+    #[serde(flatten)] // item_type replaced in serialization with one of file, folder, package
     pub item_type: ItemType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted: Option<Exists>,
 }
 
-#[derive(Serialize,Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct DriveState {
     pub size: u64,
     pub items: HashMap<String, Item>,
@@ -68,11 +72,11 @@ impl DriveState {
     }
 
     pub fn upsert(&mut self, item: Item) -> u64 {
-        if let ItemType::File {..} = item.item_type {
+        if let ItemType::File { .. } = item.item_type {
             self.size += item.size;
         }
         if let Some(prev) = self.items.insert(item.id.clone(), item) {
-            if let ItemType::File {..} = prev.item_type {
+            if let ItemType::File { .. } = prev.item_type {
                 let size = prev.size;
                 assert!(size <= self.size);
                 self.size -= size;
@@ -83,7 +87,7 @@ impl DriveState {
 
     pub fn delete(&mut self, item: Item) -> u64 {
         if let Some(prev) = self.items.remove(&item.id) {
-            if let ItemType::File {..} = prev.item_type {
+            if let ItemType::File { .. } = prev.item_type {
                 let size = prev.size;
                 assert!(size <= self.size);
                 self.size -= size;
@@ -93,7 +97,7 @@ impl DriveState {
     }
 }
 
-#[derive(Serialize,Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct DriveSnapshot {
     pub delta_link: String,
     #[serde(flatten)]
@@ -116,8 +120,8 @@ impl DriveSnapshot {
             delta_link: link,
             state: DriveState {
                 size: 0,
-                items: HashMap::new()
-            }
+                items: HashMap::new(),
+            },
         }
     }
 }

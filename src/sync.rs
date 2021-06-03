@@ -1,10 +1,11 @@
+use reqwest::blocking::{Client, Response};
+use reqwest::header::RETRY_AFTER;
+use reqwest::StatusCode;
+use serde_derive::Deserialize;
 use serde_json::Value;
 use std::error::Error;
 use std::sync::mpsc;
 use std::time::Duration;
-use reqwest::StatusCode;
-use serde_derive::Deserialize;
-
 
 pub trait DriveItemHandler<DriveItem> {
     // remove all data and start from scratch
@@ -14,7 +15,7 @@ pub trait DriveItemHandler<DriveItem> {
     fn handle(&mut self, item: DriveItem);
 }
 
-fn get(client: &reqwest::Client, uri: &str) -> Result<reqwest::Response, Box<dyn Error>> {
+fn get(client: &Client, uri: &str) -> Result<Response, Box<dyn Error>> {
     let mut retries = 3;
     let mut delay = 1;
     loop {
@@ -24,7 +25,7 @@ fn get(client: &reqwest::Client, uri: &str) -> Result<reqwest::Response, Box<dyn
             }
             Err(ref error) if retries > 0 => {
                 eprintln!("{:?}\n", error);
-            },
+            }
             Err(error) => {
                 return Err(error.into());
             }
@@ -40,7 +41,7 @@ enum SyncLink {
     #[serde(rename = "@odata.nextLink")]
     More(String),
     #[serde(rename = "@odata.deltaLink")]
-    Done(String)
+    Done(String),
 }
 #[derive(Deserialize)]
 struct SyncPage<DriveItem> {
@@ -59,15 +60,16 @@ macro_rules! retry_or_panic {
         } else {
             panic!($message);
         }
-    }
+    };
 }
 
 fn fetch_items<DriveItem>(
-    client: &reqwest::Client,
+    client: &Client,
     mut link: String,
-    sender: mpsc::Sender<Option<Vec<DriveItem>>>
+    sender: mpsc::Sender<Option<Vec<DriveItem>>>,
 ) -> String
-    where DriveItem: serde::de::DeserializeOwned
+where
+    DriveItem: serde::de::DeserializeOwned,
 {
     let mut fail_count = 0;
     loop {
@@ -76,7 +78,7 @@ fn fetch_items<DriveItem>(
                 eprintln!("{}", error);
                 retry_or_panic!(fail_count, "Error fetching items");
             }
-            Ok(mut response) => match response.status() {
+            Ok(response) => match response.status() {
                 StatusCode::OK => {
                     match response.text() {
                         Ok(text) => {
@@ -87,7 +89,7 @@ fn fetch_items<DriveItem>(
                                         SyncLink::More(next) => {
                                             fail_count = 0;
                                             link = next;
-                                        },
+                                        }
                                         SyncLink::Done(delta) => {
                                             return delta;
                                         }
@@ -106,7 +108,7 @@ fn fetch_items<DriveItem>(
                             retry_or_panic!(fail_count, "Partial response");
                         }
                     }
-                },
+                }
                 StatusCode::GONE => {
                     // If the server returns 410 Gone, the delta link has expired, and we need to
                     // start a new sync using the link in the Location header.
@@ -115,30 +117,46 @@ fn fetch_items<DriveItem>(
                     // Send None to indicate that the DriveItemHandler should be reset
                     sender.send(None).unwrap();
                     fail_count = 0;
-                    link = response.headers().get("Location").unwrap().to_str().unwrap().to_owned();
-                },
+                    link = response
+                        .headers()
+                        .get("Location")
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_owned();
+                }
                 status => {
-                    eprintln!("Response {:?} {}", status, status.canonical_reason().unwrap());
+                    eprintln!(
+                        "Response {:?} {}",
+                        status,
+                        status.canonical_reason().unwrap()
+                    );
+                    let retry_header = response
+                        .headers()
+                        .get(RETRY_AFTER)
+                        .map(|v| v.to_str().unwrap().to_string());
                     match response.text() {
                         Ok(text) => {
                             match serde_json::from_str::<Value>(&text) {
-                                Ok(page) => {
-                                    match page.get("error") {
-                                        Some(error) => {
-                                            if let Some(code) = error.get("code").and_then(Value::as_str) {
-                                                eprintln!("Code: {}", code);
-                                            }
-                                            if let Some(message) = error.get("message").and_then(Value::as_str) {
-                                                if message.len() > 0 {
-                                                    eprintln!("Message: {}", message);
-                                                }
-                                            }
+                                Ok(page) => match page.get("error") {
+                                    Some(error) => {
+                                        if let Some(code) =
+                                            error.get("code").and_then(Value::as_str)
+                                        {
+                                            eprintln!("Code: {}", code);
                                         }
-                                        None => {
-                                            eprintln!("Text: {:?}", text);
+                                        if let Some(message) =
+                                            error.get("message").and_then(Value::as_str)
+                                        {
+                                            if message.len() > 0 {
+                                                eprintln!("Message: {}", message);
+                                            }
                                         }
                                     }
-                                }
+                                    None => {
+                                        eprintln!("Text: {:?}", text);
+                                    }
+                                },
                                 Err(error) => {
                                     eprintln!("Text: {:?}", text);
                                     eprintln!("{}", error);
@@ -146,16 +164,14 @@ fn fetch_items<DriveItem>(
                             };
                         }
                         Err(error) => {
-                            eprintln!("Response: {:?}", response);
                             eprintln!("{}", error);
                         }
                     }
                     // If the server returns a Retry-After header, then everything appears OK with
                     // the request, we just need to slow down.
                     // https://docs.microsoft.com/onedrive/developer/rest-api/concepts/scan-guidance#what-happens-when-you-get-throttled
-                    match response.headers().get("Retry-After") {
-                        Some(value) => {
-                            let s = value.to_str().unwrap();
+                    match retry_header {
+                        Some(s) => {
                             eprintln!("Retry-After: {}\n", s);
                             let delay = s.parse().unwrap();
                             std::thread::sleep(Duration::from_secs(delay));
@@ -165,23 +181,22 @@ fn fetch_items<DriveItem>(
                         }
                     }
                 }
-            }
+            },
         }
     }
 }
 
 pub fn sync_drive_items<DriveItem: 'static>(
-    client: &reqwest::Client,
+    client: &Client,
     link: String,
-    handler: &mut impl DriveItemHandler<DriveItem>
+    handler: &mut impl DriveItemHandler<DriveItem>,
 ) -> Result<String, Box<dyn Error>>
-where DriveItem: Send + serde::de::DeserializeOwned
+where
+    DriveItem: Send + serde::de::DeserializeOwned,
 {
     let (sender, receiver) = mpsc::channel::<Option<Vec<DriveItem>>>();
     let client = client.clone();
-    let t = std::thread::spawn(move || {
-        fetch_items(&client, link, sender)
-    });
+    let t = std::thread::spawn(move || fetch_items(&client, link, sender));
     loop {
         match receiver.recv() {
             Ok(Some(items)) => {
@@ -200,5 +215,6 @@ where DriveItem: Send + serde::de::DeserializeOwned
             }
         }
     }
-    t.join().map_err(|any| string_error::into_err(format!("{:?}", any)))
+    t.join()
+        .map_err(|any| string_error::into_err(format!("{:?}", any)))
 }

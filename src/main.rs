@@ -15,15 +15,15 @@ mod sync;
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 use crate::item::{DriveSnapshot, DriveState, Item, ItemType};
-use crate::sync::{sync_drive_items, DriveItemHandler};
 use crate::storage::Storage;
+use crate::sync::{sync_drive_items, DriveItemHandler};
+use oauth2::basic::BasicTokenType;
+use oauth2::TokenResponse;
+use reqwest::{header, StatusCode};
+use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::time::Duration;
-use reqwest::{header, StatusCode};
-use serde_json::Value;
-use oauth2::basic::BasicTokenType;
-use oauth2::TokenResponse;
 
 const CRATE_NAME: Option<&str> = option_env!("CARGO_PKG_NAME");
 const CRATE_VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
@@ -67,15 +67,18 @@ impl<'a> DriveItemHandler<Item> for ItemHandler<'a> {
     fn handle(&mut self, item: Item) {
         let size = if item.deleted.is_some() {
             self.state.delete(item)
-        }
-        else {
+        } else {
             self.state.upsert(item)
         };
         self.bar.set_position(size);
     }
 }
 
-fn sync_items(client: &reqwest::Client, mut snapshot: DriveSnapshot, bar: &indicatif::ProgressBar) -> Result<DriveSnapshot, Box<dyn Error>> {
+fn sync_items(
+    client: &reqwest::blocking::Client,
+    mut snapshot: DriveSnapshot,
+    bar: &indicatif::ProgressBar,
+) -> Result<DriveSnapshot, Box<dyn Error>> {
     let mut handler = ItemHandler {
         state: &mut snapshot.state,
         bar,
@@ -86,7 +89,9 @@ fn sync_items(client: &reqwest::Client, mut snapshot: DriveSnapshot, bar: &indic
 
 fn ignore_file(mime_type: &Option<String>) -> bool {
     // Files with the "application/msonenote" MIME Type do not have a SHA
-    mime_type.as_ref().map_or(false, |s| s == "application/msonenote")
+    mime_type
+        .as_ref()
+        .map_or(false, |s| s == "application/msonenote")
 }
 
 fn ignore_path(dirname: &str, basename: &str) -> bool {
@@ -96,16 +101,18 @@ fn ignore_path(dirname: &str, basename: &str) -> bool {
     basename.ends_with(".svn-base") && dirname.contains("/.svn/pristine/")
 }
 
-fn analyze_items(names_by_hash: &HashMap<String, Item>)
-    -> (u32, u32, BTreeMap<u64, HashMap<ItemHash, Vec<String>>>)
-{
+fn analyze_items(
+    names_by_hash: &HashMap<String, Item>,
+) -> (u32, u32, BTreeMap<u64, HashMap<ItemHash, Vec<String>>>) {
     let mut names_by_hash_by_size = BTreeMap::<u64, HashMap<ItemHash, Vec<String>>>::new();
     let mut file_count = 0;
     let mut folder_count = 0;
     let bar = indicatif::ProgressBar::new(names_by_hash.len() as u64);
-    bar.set_style(indicatif::ProgressStyle::default_bar()
-        .template("Analyzing duplicates: [{elapsed_precise}] {wide_bar} {percent}%")
-        .progress_chars("#>-"));
+    bar.set_style(
+        indicatif::ProgressStyle::default_bar()
+            .template("Analyzing duplicates: [{elapsed_precise}] {wide_bar} {percent}%")
+            .progress_chars("#>-"),
+    );
     bar.tick();
     for item in names_by_hash.values() {
         bar.inc(1);
@@ -119,49 +126,44 @@ fn analyze_items(names_by_hash: &HashMap<String, Item>)
                     None => {
                         // deleted parent
                         continue;
-                    },
-                    Some(ref path) => path.trim_start_matches("/drive/root:/")
+                    }
+                    Some(ref path) => path.trim_start_matches("/drive/root:/"),
                 };
                 if ignore_path(dirname, &item.name) {
                     continue;
                 }
                 let hash = match hashes {
-                    Some(hashes) => {
-                        match item.parent.drive_type.as_ref() {
-                            "personal" => {
-                                match hashes.sha {
-                                    Some(ref sha) => {
-                                        ItemHash::Sha1(sha.clone())
-                                    }
-                                    None => {
-                                        eprintln!("Ignoring item due to missing sha1 hash: {:?}\n", item);
-                                        continue;
-                                    }
-                                }
-                            },
-                            "business" | "documentLibrary" => {
-                                match hashes.xor {
-                                    Some(ref xor) => {
-                                        ItemHash::QuickXor(xor.clone())
-                                    }
-                                    None => {
-                                        eprintln!("Ignoring item due to missing quickXor hash: {:?}\n", item);
-                                        continue;
-                                    }
-                                }
-                            },
-                            _ => {
-                                eprintln!("Ignoring item due to unknown drive_type: {:?}\n", item);
+                    Some(hashes) => match item.parent.drive_type.as_ref() {
+                        "personal" => match hashes.sha {
+                            Some(ref sha) => ItemHash::Sha1(sha.clone()),
+                            None => {
+                                eprintln!("Ignoring item due to missing sha1 hash: {:?}\n", item);
                                 continue;
                             }
+                        },
+                        "business" | "documentLibrary" => match hashes.xor {
+                            Some(ref xor) => ItemHash::QuickXor(xor.clone()),
+                            None => {
+                                eprintln!(
+                                    "Ignoring item due to missing quickXor hash: {:?}\n",
+                                    item
+                                );
+                                continue;
+                            }
+                        },
+                        _ => {
+                            eprintln!("Ignoring item due to unknown drive_type: {:?}\n", item);
+                            continue;
                         }
-                    }
+                    },
                     None => {
                         eprintln!("Ignoring item due to missing hashes: {:?}\n", hashes);
                         continue;
                     }
                 };
-                let names_by_hash = names_by_hash_by_size.entry(item.size).or_insert_with(HashMap::<ItemHash, Vec<String>>::new);
+                let names_by_hash = names_by_hash_by_size
+                    .entry(item.size)
+                    .or_insert_with(HashMap::<ItemHash, Vec<String>>::new);
                 // allocating the key only on insert is messy - we could use raw_entry here,
                 // or maybe entry_ref() will exist one day - for now, always allocate
                 let v = names_by_hash.entry(hash).or_insert_with(Vec::<String>::new);
@@ -183,35 +185,45 @@ fn main() {
     let mut headers = header::HeaderMap::new();
     headers.insert(
         header::USER_AGENT,
-        header::HeaderValue::from_str(
-            &format!(
-                "{}/{}",
-                CRATE_NAME.unwrap_or("msod-stat"),
-                CRATE_VERSION.unwrap_or("unknown"),
-            )
-        ).unwrap());
+        header::HeaderValue::from_str(&format!(
+            "{}/{}",
+            CRATE_NAME.unwrap_or("msod-stat"),
+            CRATE_VERSION.unwrap_or("unknown"),
+        ))
+        .unwrap(),
+    );
     match token.token_type() {
         BasicTokenType::Bearer => {
             headers.insert(
                 header::AUTHORIZATION,
-                header::HeaderValue::from_str(
-                    &format!("Bearer {}", token.access_token().secret().to_string())
-                ).unwrap()
+                header::HeaderValue::from_str(&format!(
+                    "Bearer {}",
+                    token.access_token().secret().to_string()
+                ))
+                .unwrap(),
             );
-        },
+        }
         _ => {
             panic!("only support Bearer Authorization")
         }
     }
 
-    let client = reqwest::Client::builder()
+    let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(120))
         .default_headers(headers)
-        .build().unwrap();
+        .build()
+        .unwrap();
 
-    let mut response = client.get("https://graph.microsoft.com/v1.0/me/drives").send().unwrap();
+    let response = client
+        .get("https://graph.microsoft.com/v1.0/me/drives")
+        .send()
+        .unwrap();
     if response.status() != StatusCode::OK {
-        panic!("{:?} {}", response.status(), response.status().canonical_reason().unwrap());
+        panic!(
+            "{:?} {}",
+            response.status(),
+            response.status().canonical_reason().unwrap()
+        );
     }
     let result = response.text().unwrap();
     let json: Value = serde_json::from_str(&result).unwrap();
@@ -234,17 +246,26 @@ fn main() {
             size_as_string(deleted)
         );
         let bar = indicatif::ProgressBar::new(used);
-        bar.set_style(indicatif::ProgressStyle::default_bar()
-            .template("Fetching drive data: [{elapsed_precise}] {wide_bar} {percent}%")
-            .progress_chars("#>-"));
+        bar.set_style(
+            indicatif::ProgressStyle::default_bar()
+                .template("Fetching drive data: [{elapsed_precise}] {wide_bar} {percent}%")
+                .progress_chars("#>-"),
+        );
         bar.enable_steady_tick(100);
-        let cache = Storage::new(project_dirs.as_ref().map(|dir| cache_filename(dir, drive_id)));
-        let snapshot = cache.load().unwrap_or_else(|| DriveSnapshot::default(drive_id));
+        let cache = Storage::new(
+            project_dirs
+                .as_ref()
+                .map(|dir| cache_filename(dir, drive_id)),
+        );
+        let snapshot = cache
+            .load()
+            .unwrap_or_else(|| DriveSnapshot::default(drive_id));
         bar.set_position(snapshot.state.size);
         let snapshot = sync_items(&client, snapshot, &bar).unwrap();
         cache.save(&snapshot);
         bar.finish_and_clear();
-        let (file_count, folder_count, names_by_hash_by_size) = analyze_items(&snapshot.state.items);
+        let (file_count, folder_count, names_by_hash_by_size) =
+            analyze_items(&snapshot.state.items);
         println!("folders:{:>10}", folder_count);
         println!("files:  {:>10}", file_count);
         println!("duplicates:");
@@ -264,24 +285,21 @@ fn main() {
 fn size_as_string(value: u64) -> String {
     if value < 32 * 1024 {
         format!("{} bytes", value)
-    }
-    else {
+    } else {
         let mib = value as f32 / 1024.0 / 1024.0;
         if mib < 1000.0 {
             format!("{:.3} MiB", mib)
-        }
-        else {
+        } else {
             let gib = mib / 1024.0;
             format!("{:.3} GiB", gib)
         }
     }
-
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
     use super::{Item, ItemType};
+    use serde_json::json;
 
     #[test]
     fn json_file() {
@@ -296,13 +314,14 @@ mod tests {
                 },
                 "mimeType": "image/jpeg"
             },
-        }).to_string();
+        })
+        .to_string();
         let item: Item = serde_json::from_str(&data).unwrap();
         assert_eq!(item.id, "ID");
         assert_eq!(item.name, "NAME");
         assert_eq!(item.size, 8192);
         match item.item_type {
-            ItemType::File{ mime_type, .. } => {
+            ItemType::File { mime_type, .. } => {
                 assert_eq!(mime_type, Some("image/jpeg".to_owned()));
             }
             _ => {
@@ -325,7 +344,8 @@ mod tests {
                     "viewType": "thumbnails"
                 }
             }
-        }).to_string();
+        })
+        .to_string();
         let item: Item = serde_json::from_str(&data).unwrap();
         assert_eq!(item.id, "ID");
         assert_eq!(item.name, "NAME");
@@ -347,7 +367,8 @@ mod tests {
                     "viewType": "thumbnails"
                 }
             }
-        }).to_string();
+        })
+        .to_string();
         let item: Item = serde_json::from_str(&data).unwrap();
         assert_eq!(item.id, "ID");
         assert_eq!(item.name, "NAME");
@@ -370,13 +391,14 @@ mod tests {
                 "mimeType": "image/jpeg"
             },
             "deleted": {}
-        }).to_string();
+        })
+        .to_string();
         let item: Item = serde_json::from_str(&data).unwrap();
         assert_eq!(item.id, "ID");
         assert_eq!(item.name, "NAME");
         assert_eq!(item.size, 8192);
         match item.item_type {
-            ItemType::File{ mime_type, .. } => {
+            ItemType::File { mime_type, .. } => {
                 assert_eq!(mime_type, Some("image/jpeg".to_owned()));
             }
             _ => {
