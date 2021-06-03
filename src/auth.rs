@@ -1,22 +1,9 @@
 use std::error::Error;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use failure::Fail;
-use string_error;
-use oauth2::prelude::*;
-use oauth2::{
-    AuthorizationCode,
-    AuthType,
-    AuthUrl,
-    ClientId,
-    CsrfToken,
-    PkceCodeVerifierS256,
-    RedirectUrl,
-    ResponseType,
-    Scope,
-    TokenUrl
-};
+use oauth2::{AuthType, AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope, TokenUrl};
 use oauth2::basic::{BasicClient, BasicTokenResponse};
+use oauth2::reqwest::http_client;
 use open;
 use rand::thread_rng;
 use rand::seq::SliceRandom;
@@ -163,12 +150,12 @@ pub fn authenticate(client_id: String)
     -> Result<BasicTokenResponse, Box<dyn Error>>
 {
     let ms_graph_authorize_url = AuthUrl::new(
-        Url::parse("https://login.microsoftonline.com/common/oauth2/v2.0/authorize")?
-    );
+        "https://login.microsoftonline.com/common/oauth2/v2.0/authorize".to_string()
+    )?;
     let ms_graph_token_url = Some(
         TokenUrl::new(
-            Url::parse("https://login.microsoftonline.com/common/oauth2/v2.0/token")?
-        )
+            "https://login.microsoftonline.com/common/oauth2/v2.0/token".to_string()
+        )?
     );
 
     let server = start_server()?;
@@ -182,18 +169,17 @@ pub fn authenticate(client_id: String)
             ms_graph_token_url
         )
         .set_auth_type(AuthType::RequestBody)
-        .add_scope(Scope::new("Files.Read.All".to_string()))
-        .set_redirect_url(RedirectUrl::new(Url::parse(&redirect_url)?));
+        .set_redirect_uri(RedirectUrl::new(redirect_url)?);
 
     // Setup PKCE code challenge
-    let code_verifier = PkceCodeVerifierS256::new_random();
+    let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
 
     // Generate the full authorization URL.
-    let (auth_url, csrf_token) = client.authorize_url_extension(
-        &ResponseType::new("code".to_string()),
-        CsrfToken::new_random,
-        &code_verifier.authorize_url_params(),
-    );
+    let (auth_url, csrf_token) = client
+        .authorize_url(CsrfToken::new_random)
+        .add_scope(Scope::new("Files.Read.All".to_string()))
+        .set_pkce_challenge(pkce_challenge)
+        .url();
 
     if let Err(e) = open::that(auth_url.as_str()) {
         println!("{}", e);
@@ -205,9 +191,10 @@ pub fn authenticate(client_id: String)
     // close down server
     drop(server);
 
-    // Send the PKCE code verifier in the token request
-    let params: Vec<(&str, &str)> = vec![("code_verifier", &code_verifier.secret())];
+    let token_result = client
+        .exchange_code(AuthorizationCode::new(authorization_code))
+        .set_pkce_verifier(pkce_verifier)
+        .request(http_client)?;
 
-    Ok(client.exchange_code_extension(AuthorizationCode::new(authorization_code), &params)
-        .map_err(|failure| failure.compat())?)
+    Ok(token_result)
 }

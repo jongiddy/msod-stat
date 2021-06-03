@@ -22,7 +22,6 @@ use std::error::Error;
 use std::time::Duration;
 use reqwest::{header, StatusCode};
 use serde_json::Value;
-use oauth2::prelude::*;
 use oauth2::basic::BasicTokenType;
 use oauth2::TokenResponse;
 
@@ -200,8 +199,8 @@ fn main() {
                 ).unwrap()
             );
         },
-        BasicTokenType::Mac => {
-            panic!("reqwest does not support MAC Authorization")
+        _ => {
+            panic!("only support Bearer Authorization")
         }
     }
 
