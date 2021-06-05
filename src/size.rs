@@ -8,13 +8,6 @@ pub(crate) enum ItemHash {
     QuickXor(String),
 }
 
-fn ignore_file(mime_type: &Option<String>) -> bool {
-    // Files with the "application/msonenote" MIME Type do not have a SHA
-    mime_type
-        .as_ref()
-        .map_or(false, |s| s == "application/msonenote")
-}
-
 fn ignore_path(dirname: &str, basename: &str) -> bool {
     // SVN repo files may be duplicated in the .svn directory. Don't match these,
     // as they are part of the SVN repo format, and should not be modified
@@ -38,11 +31,8 @@ pub(crate) fn bucket_by_size(
     for item in names_by_hash.values() {
         bar.inc(1);
         match &item.item_type {
-            ItemType::File { mime_type, hashes } => {
+            ItemType::File { hashes } => {
                 file_count += 1;
-                if ignore_file(&mime_type) {
-                    continue;
-                }
                 let dirname = match item.parent.path {
                     None => {
                         // deleted parent
@@ -78,7 +68,7 @@ pub(crate) fn bucket_by_size(
                         }
                     },
                     None => {
-                        eprintln!("Ignoring item due to missing hashes: {:?}\n", hashes);
+                        // Files with the "application/msonenote" MIME Type do not have a SHA.
                         continue;
                     }
                 };

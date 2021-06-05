@@ -31,9 +31,6 @@ pub struct Parent {
 pub enum ItemType {
     #[serde(rename = "file")]
     File {
-        // Deleted files have an empty "file" object so all fields must be optional.
-        #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
-        mime_type: Option<String>,
         // OneNote files do not have hashes
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hashes: Option<Hash>,
@@ -146,7 +143,6 @@ mod tests {
                     "quickXorHash": "ZBIxs/4bmb5QuzTKkGJbU+7IsfM=",
                     "sha1Hash": "9784E164A3626978D838EE21A0319C0DFB39001B"
                 },
-                "mimeType": "image/jpeg"
             },
         })
         .to_string();
@@ -155,9 +151,7 @@ mod tests {
         assert_eq!(item.name, "NAME");
         assert_eq!(item.size, 8192);
         match item.item_type {
-            ItemType::File { mime_type, .. } => {
-                assert_eq!(mime_type, Some("image/jpeg".to_owned()));
-            }
+            ItemType::File { .. } => {}
             _ => {
                 panic!("Not a file!");
             }
@@ -234,7 +228,6 @@ mod tests {
                     "quickXorHash": "ZBIxs/4bmb5QuzTKkGJbU+7IsfM=",
                     "sha1Hash": "9784E164A3626978D838EE21A0319C0DFB39001B"
                 },
-                "mimeType": "image/jpeg"
             },
             "deleted": {}
         })
@@ -244,9 +237,7 @@ mod tests {
         assert_eq!(item.name, "NAME");
         assert_eq!(item.size, 8192);
         match item.item_type {
-            ItemType::File { mime_type, .. } => {
-                assert_eq!(mime_type, Some("image/jpeg".to_owned()));
-            }
+            ItemType::File { .. } => {}
             _ => {
                 panic!("Not a file!");
             }

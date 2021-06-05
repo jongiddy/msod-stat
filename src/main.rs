@@ -44,7 +44,8 @@ fn cache_filename(project: &directories::ProjectDirs, drive_id: &str) -> std::pa
     }
     // Increment the number after `drive` when the serialized format changes.
     // 2021-05-23 - updated to 2 because the original delta link format is no longer valid
-    cache_path.push(format!("drive2_{}", drive_id));
+    // 2021-06-05 - remove mime type from saved data
+    cache_path.push(format!("drive3_{}", drive_id));
     cache_path.set_extension("cbor");
     cache_path
 }
