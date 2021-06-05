@@ -307,6 +307,10 @@ mod tests {
             "id": "ID",
             "name": "NAME",
             "size": 8192,
+            "parentReference": {
+                "path": "NAME",
+                "driveType": "personal"
+            },
             "file": {
                 "hashes": {
                     "quickXorHash": "ZBIxs/4bmb5QuzTKkGJbU+7IsfM=",
@@ -337,6 +341,10 @@ mod tests {
             "id": "ID",
             "name": "NAME",
             "size": 8192,
+            "parentReference": {
+                "path": "NAME",
+                "driveType": "personal"
+            },
             "package": {
                 "view": {
                     "sortBy": "takenOrCreatedDateTime",
@@ -360,6 +368,10 @@ mod tests {
             "id": "ID",
             "name": "NAME",
             "size": 8192,
+            "parentReference": {
+                "path": "NAME",
+                "driveType": "personal"
+            },
             "folder": {
                 "view": {
                     "sortBy": "takenOrCreatedDateTime",
@@ -383,6 +395,10 @@ mod tests {
             "id": "ID",
             "name": "NAME",
             "size": 8192,
+            "parentReference": {
+                // deleting both the file and its parent gives a deleted file entry with no parent path
+                "driveType": "personal"
+            },
             "file": {
                 "hashes": {
                     "quickXorHash": "ZBIxs/4bmb5QuzTKkGJbU+7IsfM=",
