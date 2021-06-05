@@ -19,6 +19,7 @@ use crate::storage::Storage;
 use crate::sync::{sync_drive_items, DriveItemHandler};
 use oauth2::basic::BasicTokenType;
 use oauth2::TokenResponse;
+use reqwest::blocking::Client;
 use reqwest::{header, StatusCode};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -75,7 +76,7 @@ impl<'a> DriveItemHandler<Item> for ItemHandler<'a> {
 }
 
 fn sync_items(
-    client: &reqwest::blocking::Client,
+    client: &Client,
     mut snapshot: DriveSnapshot,
     bar: &indicatif::ProgressBar,
 ) -> Result<DriveSnapshot, Box<dyn Error>> {
@@ -101,7 +102,7 @@ fn ignore_path(dirname: &str, basename: &str) -> bool {
     basename.ends_with(".svn-base") && dirname.contains("/.svn/pristine/")
 }
 
-fn analyze_items(
+fn bucket_by_size(
     names_by_hash: &HashMap<String, Item>,
 ) -> (u32, u32, BTreeMap<u64, HashMap<ItemHash, Vec<String>>>) {
     let mut names_by_hash_by_size = BTreeMap::<u64, HashMap<ItemHash, Vec<String>>>::new();
@@ -179,8 +180,7 @@ fn analyze_items(
     (file_count, folder_count, names_by_hash_by_size)
 }
 
-fn main() {
-    let project_dirs = directories::ProjectDirs::from("Casa", "Giddy", "MSOD-stat");
+fn get_msgraph_client() -> Client {
     let token = auth::authenticate(CLIENT_ID.to_owned()).unwrap();
     let mut headers = header::HeaderMap::new();
     headers.insert(
@@ -207,75 +207,69 @@ fn main() {
             panic!("only support Bearer Authorization")
         }
     }
-
-    let client = reqwest::blocking::Client::builder()
+    Client::builder()
         .timeout(Duration::from_secs(120))
         .default_headers(headers)
         .build()
-        .unwrap();
+        .unwrap()
+}
 
-    let response = client
-        .get("https://graph.microsoft.com/v1.0/me/drives")
-        .send()
-        .unwrap();
-    if response.status() != StatusCode::OK {
-        panic!(
-            "{:?} {}",
-            response.status(),
-            response.status().canonical_reason().unwrap()
-        );
-    }
-    let result = response.text().unwrap();
-    let json: Value = serde_json::from_str(&result).unwrap();
-    for drive in json["value"].as_array().unwrap() {
-        let drive_id = drive["id"].as_str().unwrap();
-        let quota = &drive["quota"];
-        let total = quota["total"].as_u64().unwrap();
-        let used = quota["used"].as_u64().unwrap();
-        let deleted = quota["deleted"].as_u64().unwrap();
-        let remaining = quota["remaining"].as_u64().unwrap();
-        assert!(used + remaining == total);
-        println!();
-        println!("Drive {}", drive_id);
-        println!("total:  {:>18}", size_as_string(total));
-        println!("free:   {:>18}", size_as_string(remaining));
-        println!(
-            "used:   {:>18} = {:.2}% (including {} pending deletion)",
-            size_as_string(used),
-            used as f32 * 100.0 / total as f32,
-            size_as_string(deleted)
-        );
-        let bar = indicatif::ProgressBar::new(used);
-        bar.set_style(
-            indicatif::ProgressStyle::default_bar()
-                .template("Fetching drive data: [{elapsed_precise}] {wide_bar} {percent}%")
-                .progress_chars("#>-"),
-        );
-        bar.enable_steady_tick(100);
-        let cache = Storage::new(
-            project_dirs
-                .as_ref()
-                .map(|dir| cache_filename(dir, drive_id)),
-        );
-        let snapshot = cache
-            .load()
-            .unwrap_or_else(|| DriveSnapshot::default(drive_id));
-        bar.set_position(snapshot.state.size);
-        let snapshot = sync_items(&client, snapshot, &bar).unwrap();
-        cache.save(&snapshot);
-        bar.finish_and_clear();
-        let (file_count, folder_count, names_by_hash_by_size) =
-            analyze_items(&snapshot.state.items);
-        println!("folders:{:>10}", folder_count);
-        println!("files:  {:>10}", file_count);
-        println!("duplicates:");
-        for (size, names_by_hash) in names_by_hash_by_size.iter().rev() {
-            for names in names_by_hash.values() {
-                if names.len() > 1 {
-                    println!("{}", size_as_string(*size));
-                    for name in names {
-                        println!("\t{}", name);
-                    }
+fn fetch_drive(
+    drive_id: &str,
+    expected: u64,
+    project_dirs: &Option<directories::ProjectDirs>,
+    client: &Client,
+) -> DriveSnapshot {
+    let bar = indicatif::ProgressBar::new(expected);
+    bar.set_style(
+        indicatif::ProgressStyle::default_bar()
+            .template("Fetching drive data: [{elapsed_precise}] {wide_bar} {percent}%")
+            .progress_chars("#>-"),
+    );
+    bar.enable_steady_tick(100);
+    let cache = Storage::new(
+        project_dirs
+            .as_ref()
+            .map(|dir| cache_filename(dir, drive_id)),
+    );
+    let snapshot = cache
+        .load()
+        .unwrap_or_else(|| DriveSnapshot::default(drive_id));
+    bar.set_position(snapshot.state.size);
+    let snapshot = sync_items(client, snapshot, &bar).unwrap();
+    cache.save(&snapshot);
+    bar.finish_and_clear();
+    snapshot
+}
+
+fn show_usage(drive: &Value) {
+    let quota = &drive["quota"];
+    let total = quota["total"].as_u64().unwrap();
+    let used = quota["used"].as_u64().unwrap();
+    let deleted = quota["deleted"].as_u64().unwrap();
+    let remaining = quota["remaining"].as_u64().unwrap();
+    assert!(used + remaining == total);
+    println!("total:  {:>18}", size_as_string(total));
+    println!("free:   {:>18}", size_as_string(remaining));
+    println!(
+        "used:   {:>18} = {:.2}% (including {} pending deletion)",
+        size_as_string(used),
+        used as f32 * 100.0 / total as f32,
+        size_as_string(deleted)
+    );
+}
+
+fn show_duplicates(snapshot: DriveSnapshot) {
+    let (file_count, folder_count, names_by_hash_by_size) = bucket_by_size(&snapshot.state.items);
+    println!("folders:{:>10}", folder_count);
+    println!("files:  {:>10}", file_count);
+    println!("duplicates:");
+    for (size, names_by_hash) in names_by_hash_by_size.iter().rev() {
+        for names in names_by_hash.values() {
+            if names.len() > 1 {
+                println!("{}", size_as_string(*size));
+                for name in names {
+                    println!("\t{}", name);
                 }
             }
         }
@@ -293,6 +287,37 @@ fn size_as_string(value: u64) -> String {
             let gib = mib / 1024.0;
             format!("{:.3} GiB", gib)
         }
+    }
+}
+
+fn main() {
+    let project_dirs = directories::ProjectDirs::from("Casa", "Giddy", "MSOD-stat");
+    let client = get_msgraph_client();
+    let response = client
+        .get("https://graph.microsoft.com/v1.0/me/drives")
+        .send()
+        .unwrap();
+    if response.status() != StatusCode::OK {
+        panic!(
+            "{:?} {}",
+            response.status(),
+            response.status().canonical_reason().unwrap()
+        );
+    }
+    let result = response.text().unwrap();
+    let json: Value = serde_json::from_str(&result).unwrap();
+    for drive in json["value"].as_array().unwrap() {
+        let drive_id = drive["id"].as_str().unwrap();
+        println!();
+        println!("Drive {}", drive_id);
+        show_usage(drive);
+        let snapshot = fetch_drive(
+            drive_id,
+            drive["quota"]["used"].as_u64().unwrap(),
+            &project_dirs,
+            &client,
+        );
+        show_duplicates(snapshot);
     }
 }
 
