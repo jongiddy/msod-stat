@@ -125,3 +125,132 @@ impl DriveSnapshot {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Item, ItemType};
+    use serde_json::json;
+
+    #[test]
+    fn json_file() {
+        let data = json!({
+            "id": "ID",
+            "name": "NAME",
+            "size": 8192,
+            "parentReference": {
+                "path": "NAME",
+                "driveType": "personal"
+            },
+            "file": {
+                "hashes": {
+                    "quickXorHash": "ZBIxs/4bmb5QuzTKkGJbU+7IsfM=",
+                    "sha1Hash": "9784E164A3626978D838EE21A0319C0DFB39001B"
+                },
+                "mimeType": "image/jpeg"
+            },
+        })
+        .to_string();
+        let item: Item = serde_json::from_str(&data).unwrap();
+        assert_eq!(item.id, "ID");
+        assert_eq!(item.name, "NAME");
+        assert_eq!(item.size, 8192);
+        match item.item_type {
+            ItemType::File { mime_type, .. } => {
+                assert_eq!(mime_type, Some("image/jpeg".to_owned()));
+            }
+            _ => {
+                panic!("Not a file!");
+            }
+        }
+        assert!(item.deleted.is_none());
+    }
+
+    #[test]
+    fn json_package() {
+        let data = json!({
+            "id": "ID",
+            "name": "NAME",
+            "size": 8192,
+            "parentReference": {
+                "path": "NAME",
+                "driveType": "personal"
+            },
+            "package": {
+                "view": {
+                    "sortBy": "takenOrCreatedDateTime",
+                    "sortOrder": "descending",
+                    "viewType": "thumbnails"
+                }
+            }
+        })
+        .to_string();
+        let item: Item = serde_json::from_str(&data).unwrap();
+        assert_eq!(item.id, "ID");
+        assert_eq!(item.name, "NAME");
+        assert_eq!(item.size, 8192);
+        assert_eq!(item.item_type, ItemType::Package {});
+        assert!(item.deleted.is_none());
+    }
+
+    #[test]
+    fn json_folder() {
+        let data = json!({
+            "id": "ID",
+            "name": "NAME",
+            "size": 8192,
+            "parentReference": {
+                "path": "NAME",
+                "driveType": "personal"
+            },
+            "folder": {
+                "view": {
+                    "sortBy": "takenOrCreatedDateTime",
+                    "sortOrder": "descending",
+                    "viewType": "thumbnails"
+                }
+            }
+        })
+        .to_string();
+        let item: Item = serde_json::from_str(&data).unwrap();
+        assert_eq!(item.id, "ID");
+        assert_eq!(item.name, "NAME");
+        assert_eq!(item.size, 8192);
+        assert_eq!(item.item_type, ItemType::Folder {});
+        assert!(item.deleted.is_none());
+    }
+
+    #[test]
+    fn json_deleted() {
+        let data = json!({
+            "id": "ID",
+            "name": "NAME",
+            "size": 8192,
+            "parentReference": {
+                // deleting both the file and its parent gives a deleted file entry with no parent path
+                "driveType": "personal"
+            },
+            "file": {
+                "hashes": {
+                    "quickXorHash": "ZBIxs/4bmb5QuzTKkGJbU+7IsfM=",
+                    "sha1Hash": "9784E164A3626978D838EE21A0319C0DFB39001B"
+                },
+                "mimeType": "image/jpeg"
+            },
+            "deleted": {}
+        })
+        .to_string();
+        let item: Item = serde_json::from_str(&data).unwrap();
+        assert_eq!(item.id, "ID");
+        assert_eq!(item.name, "NAME");
+        assert_eq!(item.size, 8192);
+        match item.item_type {
+            ItemType::File { mime_type, .. } => {
+                assert_eq!(mime_type, Some("image/jpeg".to_owned()));
+            }
+            _ => {
+                panic!("Not a file!");
+            }
+        }
+        assert!(item.deleted.is_some());
+    }
+}
