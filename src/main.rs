@@ -19,6 +19,7 @@ use crate::size::{bucket_by_size, size_as_string};
 use crate::item::{DriveSnapshot, DriveState, Item};
 use crate::storage::Storage;
 use crate::sync::{sync_drive_items, DriveItemHandler};
+use item::initial_link;
 use oauth2::basic::BasicTokenType;
 use oauth2::TokenResponse;
 use reqwest::blocking::Client;
@@ -74,18 +75,20 @@ impl<'a> DriveItemHandler<Item> for ItemHandler<'a> {
 fn sync_items(
     client: &Client,
     mut snapshot: DriveSnapshot,
+    reset_link: String,
     bar: &indicatif::ProgressBar,
 ) -> Result<DriveSnapshot, Box<dyn Error>> {
     let mut handler = ItemHandler {
         state: &mut snapshot.state,
         bar,
     };
-    snapshot.delta_link = sync_drive_items(client, snapshot.delta_link, &mut handler)?;
+    snapshot.delta_link = sync_drive_items(client, reset_link, snapshot.delta_link, &mut handler)?;
     Ok(snapshot)
 }
 
 fn get_msgraph_client() -> Client {
     let token = auth::authenticate(CLIENT_ID.to_owned()).unwrap();
+    println!("token = {}", token.access_token().secret().to_string());
     let mut headers = header::HeaderMap::new();
     headers.insert(
         header::USER_AGENT,
@@ -140,7 +143,7 @@ fn fetch_drive(
         .load()
         .unwrap_or_else(|| DriveSnapshot::default(drive_id));
     bar.set_position(snapshot.state.size);
-    let snapshot = sync_items(client, snapshot, &bar).unwrap();
+    let snapshot = sync_items(client, snapshot, initial_link(drive_id), &bar).unwrap();
     cache.save(&snapshot);
     bar.finish_and_clear();
     snapshot

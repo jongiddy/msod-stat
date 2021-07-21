@@ -101,20 +101,24 @@ pub struct DriveSnapshot {
     pub state: DriveState,
 }
 
+pub fn initial_link(drive_id: &str) -> String {
+    const PREFIX: &str = "https://graph.microsoft.com/v1.0/me/drives/";
+    const SUFFIX: &str = concat!(
+        "/root/delta",
+        "?select=id,name,size,parentReference,file,folder,package,deleted"
+    );
+    let mut link = String::with_capacity(PREFIX.len() + drive_id.len() + SUFFIX.len());
+    link.push_str(PREFIX);
+    link.push_str(drive_id);
+    link.push_str(SUFFIX);
+    link
+}
+
 impl DriveSnapshot {
     pub fn default(drive_id: &str) -> DriveSnapshot {
         // an initial state that will scan entire drive
-        const PREFIX: &str = "https://graph.microsoft.com/v1.0/me/drives/";
-        const SUFFIX: &str = concat!(
-            "/root/delta",
-            "?select=id,name,size,parentReference,file,folder,package,deleted"
-        );
-        let mut link = String::with_capacity(PREFIX.len() + drive_id.len() + SUFFIX.len());
-        link.push_str(PREFIX);
-        link.push_str(drive_id);
-        link.push_str(SUFFIX);
         DriveSnapshot {
-            delta_link: link,
+            delta_link: initial_link(drive_id),
             state: DriveState {
                 size: 0,
                 items: HashMap::new(),

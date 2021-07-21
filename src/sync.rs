@@ -65,6 +65,7 @@ macro_rules! retry_or_panic {
 
 fn fetch_items<DriveItem>(
     client: &Client,
+    reset_link: String,
     mut link: String,
     sender: mpsc::Sender<Option<Vec<DriveItem>>>,
 ) -> String
@@ -109,21 +110,22 @@ where
                         }
                     }
                 }
-                StatusCode::GONE => {
-                    // If the server returns 410 Gone, the delta link has expired, and we need to
-                    // start a new sync using the link in the Location header.
+                StatusCode::GONE | StatusCode::UNAUTHORIZED => {
+                    // If the server returns 410 Gone, the delta link has expired. Start a new sync
+                    // using the link in the Location header:
                     // https://docs.microsoft.com/onedrive/developer/rest-api/api/driveitem_delta#response-2
+                    // Although not documented, the API can return 401 Unauthorized when using an
+                    // old, but correctly authorized, delta link: https://github.com/jongiddy/msod-stat/issues/1
                     eprintln!("Delta link failed, restarting sync...");
                     // Send None to indicate that the DriveItemHandler should be reset
                     sender.send(None).unwrap();
-                    fail_count = 0;
-                    link = response
-                        .headers()
-                        .get("Location")
-                        .unwrap()
-                        .to_str()
-                        .unwrap()
-                        .to_owned();
+                    link = match response.headers().get("Location") {
+                        Some(location) => match location.to_str() {
+                            Ok(s) => s.to_owned(),
+                            Err(_) => reset_link.clone(),
+                        },
+                        None => reset_link.clone(),
+                    };
                 }
                 status => {
                     eprintln!(
@@ -137,6 +139,7 @@ where
                         .map(|v| v.to_str().unwrap().to_string());
                     match response.text() {
                         Ok(text) => {
+                            eprintln!("Text: {}", text);
                             match serde_json::from_str::<Value>(&text) {
                                 Ok(page) => match page.get("error") {
                                     Some(error) => {
@@ -188,6 +191,7 @@ where
 
 pub fn sync_drive_items<DriveItem: 'static>(
     client: &Client,
+    reset_link: String,
     link: String,
     handler: &mut impl DriveItemHandler<DriveItem>,
 ) -> Result<String, Box<dyn Error>>
@@ -196,7 +200,7 @@ where
 {
     let (sender, receiver) = mpsc::channel::<Option<Vec<DriveItem>>>();
     let client = client.clone();
-    let t = std::thread::spawn(move || fetch_items(&client, link, sender));
+    let t = std::thread::spawn(move || fetch_items(&client, reset_link, link, sender));
     loop {
         match receiver.recv() {
             Ok(Some(items)) => {
