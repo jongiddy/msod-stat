@@ -1,6 +1,6 @@
 mod auth;
-mod size;
 mod item;
+mod size;
 mod storage;
 mod sync;
 
@@ -15,11 +15,10 @@ mod sync;
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
+use crate::item::{initial_link, DriveSnapshot, DriveState, Item};
 use crate::size::{bucket_by_size, size_as_string};
-use crate::item::{DriveSnapshot, DriveState, Item};
 use crate::storage::Storage;
 use crate::sync::{sync_drive_items, DriveItemHandler};
-use item::initial_link;
 use oauth2::basic::BasicTokenType;
 use oauth2::TokenResponse;
 use reqwest::blocking::Client;
@@ -88,7 +87,6 @@ fn sync_items(
 
 fn get_msgraph_client() -> Client {
     let token = auth::authenticate(CLIENT_ID.to_owned()).unwrap();
-    println!("token = {}", token.access_token().secret().to_string());
     let mut headers = header::HeaderMap::new();
     headers.insert(
         header::USER_AGENT,
