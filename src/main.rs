@@ -19,12 +19,12 @@ use crate::item::{initial_link, DriveSnapshot, DriveState, Item};
 use crate::size::{bucket_by_size, size_as_string};
 use crate::storage::Storage;
 use crate::sync::{sync_drive_items, DriveItemHandler};
+use eyre::{Report, Result, bail, ensure};
 use oauth2::basic::BasicTokenType;
 use oauth2::TokenResponse;
 use reqwest::blocking::Client;
 use reqwest::{header, StatusCode};
 use serde_json::Value;
-use std::error::Error;
 use std::time::Duration;
 
 const CRATE_NAME: Option<&str> = option_env!("CARGO_PKG_NAME");
@@ -76,7 +76,7 @@ fn sync_items(
     mut snapshot: DriveSnapshot,
     reset_link: String,
     bar: &indicatif::ProgressBar,
-) -> Result<DriveSnapshot, Box<dyn Error>> {
+) -> Result<DriveSnapshot> {
     let mut handler = ItemHandler {
         state: &mut snapshot.state,
         bar,
@@ -85,8 +85,8 @@ fn sync_items(
     Ok(snapshot)
 }
 
-fn get_msgraph_client() -> Client {
-    let token = auth::authenticate(CLIENT_ID.to_owned()).unwrap();
+fn get_msgraph_client() -> Result<Client> {
+    let token = auth::authenticate(CLIENT_ID.to_owned())?;
     let mut headers = header::HeaderMap::new();
     headers.insert(
         header::USER_AGENT,
@@ -94,8 +94,7 @@ fn get_msgraph_client() -> Client {
             "{}/{}",
             CRATE_NAME.unwrap_or("msod-stat"),
             CRATE_VERSION.unwrap_or("unknown"),
-        ))
-        .unwrap(),
+        ))?,
     );
     match token.token_type() {
         BasicTokenType::Bearer => {
@@ -104,19 +103,18 @@ fn get_msgraph_client() -> Client {
                 header::HeaderValue::from_str(&format!(
                     "Bearer {}",
                     token.access_token().secret().to_string()
-                ))
-                .unwrap(),
+                ))?,
             );
         }
         _ => {
-            panic!("only support Bearer Authorization")
+            bail!("only support Bearer Authorization")
         }
     }
     Client::builder()
         .timeout(Duration::from_secs(120))
         .default_headers(headers)
         .build()
-        .unwrap()
+        .map_err(Report::new)
 }
 
 fn fetch_drive(
@@ -124,7 +122,7 @@ fn fetch_drive(
     expected: u64,
     project_dirs: &Option<directories::ProjectDirs>,
     client: &Client,
-) -> DriveSnapshot {
+) -> Result<DriveSnapshot> {
     let bar = indicatif::ProgressBar::new(expected);
     bar.set_style(
         indicatif::ProgressStyle::default_bar()
@@ -141,10 +139,10 @@ fn fetch_drive(
         .load()
         .unwrap_or_else(|| DriveSnapshot::default(drive_id));
     bar.set_position(snapshot.state.size);
-    let snapshot = sync_items(client, snapshot, initial_link(drive_id), &bar).unwrap();
+    let snapshot = sync_items(client, snapshot, initial_link(drive_id), &bar)?;
     cache.save(&snapshot);
     bar.finish_and_clear();
-    snapshot
+    Ok(snapshot)
 }
 
 fn show_usage(drive: &Value) {
@@ -181,22 +179,20 @@ fn show_duplicates(snapshot: DriveSnapshot) {
     }
 }
 
-fn main() {
+fn main() -> Result<()> {
     let project_dirs = directories::ProjectDirs::from("Casa", "Giddy", "MSOD-stat");
-    let client = get_msgraph_client();
+    let client = get_msgraph_client()?;
     let response = client
         .get("https://graph.microsoft.com/v1.0/me/drives")
-        .send()
-        .unwrap();
-    if response.status() != StatusCode::OK {
-        panic!(
-            "{:?} {}",
-            response.status(),
-            response.status().canonical_reason().unwrap()
-        );
-    }
-    let result = response.text().unwrap();
-    let json: Value = serde_json::from_str(&result).unwrap();
+        .send()?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "{:?} {}",
+        response.status(),
+        response.status().canonical_reason().unwrap()
+    );
+    let result = response.text()?;
+    let json: Value = serde_json::from_str(&result)?;
     for drive in json["value"].as_array().unwrap() {
         let drive_id = drive["id"].as_str().unwrap();
         println!();
@@ -207,7 +203,8 @@ fn main() {
             drive["quota"]["used"].as_u64().unwrap(),
             &project_dirs,
             &client,
-        );
+        )?;
         show_duplicates(snapshot);
     }
+    Ok(())
 }

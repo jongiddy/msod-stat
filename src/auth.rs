@@ -1,3 +1,4 @@
+use eyre::{bail, ensure, eyre, Result};
 use oauth2::basic::{BasicClient, BasicTokenResponse};
 use oauth2::reqwest::http_client;
 use oauth2::{
@@ -7,7 +8,6 @@ use oauth2::{
 use open;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
-use std::error::Error;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tiny_http::{Method, Request, Response, Server, StatusCode};
@@ -16,7 +16,7 @@ use url::Url;
 fn extract_authorization_code<'a>(
     url: &'a Url,
     csrf_token: &CsrfToken,
-) -> Result<std::borrow::Cow<'a, str>, Box<dyn Error>> {
+) -> Result<std::borrow::Cow<'a, str>> {
     // Looking for
     // /redirect?code=Mac..dc6&state=DL7jz5YIW4WusaYdDZrXzA%3d%3d
     let mut received_code = None;
@@ -24,42 +24,33 @@ fn extract_authorization_code<'a>(
     for pair in url.query_pairs() {
         match pair.0.as_ref() {
             "code" => {
-                if received_code.is_some() {
-                    return Err(string_error::static_err("Duplicate code"));
-                }
+                ensure!(received_code.is_none(), "Duplicate code");
                 received_code = Some(pair.1);
             }
             "state" => {
-                if received_state.is_some() {
-                    return Err(string_error::static_err("Duplicate state"));
-                }
+                ensure!(received_state.is_none(), "Duplicate state");
                 received_state = Some(pair.1);
             }
             parameter => {
-                return Err(string_error::into_err(format!(
-                    "Unexpected parameter: {}",
-                    parameter
-                )));
+                bail!("Unexpected parameter: {} {}", parameter, pair.1.as_ref());
             }
         }
     }
     match received_state {
         None => {
-            return Err(string_error::static_err("No CSRF token received"));
+            bail!("No CSRF token received");
         }
         Some(state) => {
-            if state.as_ref() != csrf_token.secret() {
-                return Err(string_error::static_err("CSRF token mismatch"));
-            }
+            ensure!(state.as_ref() == csrf_token.secret(), "CSRF token mismatch");
         }
     }
     match received_code {
-        None => Err(string_error::static_err("No authorization code received")),
+        None => Err(eyre!("No authorization code received")),
         Some(code) => Ok(code),
     }
 }
 
-fn handle_request(request: Request, csrf_token: &CsrfToken) -> Result<String, Box<dyn Error>> {
+fn handle_request(request: Request, csrf_token: &CsrfToken) -> Result<String> {
     let err = match request.method() {
         Method::Get => {
             let base = Url::parse("http://localhost:3003/")?;
@@ -76,10 +67,10 @@ fn handle_request(request: Request, csrf_token: &CsrfToken) -> Result<String, Bo
                     Err(err) => err,
                 }
             } else {
-                string_error::into_err(format!("Unrecognized path: {}", request.url()))
+                eyre!("Unrecognized path: {}", request.url())
             }
         }
-        _ => string_error::into_err(format!("Unsupported method: {}", request.method())),
+        _ => eyre!("Unsupported method: {}", request.method()),
     };
     let status_code = StatusCode(404);
     let response =
@@ -90,10 +81,7 @@ fn handle_request(request: Request, csrf_token: &CsrfToken) -> Result<String, Bo
     Err(err)
 }
 
-fn get_authorization_code(
-    server: &Server,
-    csrf_token: CsrfToken,
-) -> Result<String, Box<dyn Error>> {
+fn get_authorization_code(server: &Server, csrf_token: CsrfToken) -> Result<String> {
     for request in server.incoming_requests() {
         match handle_request(request, &csrf_token) {
             Ok(code) => {
@@ -105,12 +93,11 @@ fn get_authorization_code(
         }
     }
 
-    Err(string_error::static_err(
+    Err(eyre!(
         "No more incoming connections and auth code not supplied",
     ))
 }
-
-fn start_server() -> Result<Server, Box<dyn Error>> {
+fn start_server() -> Result<Server> {
     // Originally MS Graph required an exact match for the redirect URL, including the port.
     // To reduce the chance of failing with a fixed port, we used 8 different ports. Now, the
     // port is not considered for a valid Redirect URI, so it can be set to
@@ -128,23 +115,20 @@ fn start_server() -> Result<Server, Box<dyn Error>> {
             Err(err) => {
                 match err.downcast::<io::Error>() {
                     Ok(io_err) => {
-                        if io_err.kind() == io::ErrorKind::AddrInUse {
-                            // try next port
-                        } else {
-                            return Err(io_err);
-                        }
+                        ensure!(io_err.kind() == io::ErrorKind::AddrInUse, io_err);
+                        // if this port is in use, try the next port
                     }
                     Err(err) => {
-                        return Err(err);
+                        bail!(err);
                     }
                 }
             }
         }
     }
-    Err(string_error::static_err("Could not find an available port"))
+    Err(eyre!("Could not find an available port"))
 }
 
-pub fn authenticate(client_id: String) -> Result<BasicTokenResponse, Box<dyn Error>> {
+pub fn authenticate(client_id: String) -> Result<BasicTokenResponse> {
     let ms_graph_authorize_url =
         AuthUrl::new("https://login.microsoftonline.com/common/oauth2/v2.0/authorize".to_string())?;
     let ms_graph_token_url = Some(TokenUrl::new(

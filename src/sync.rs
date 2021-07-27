@@ -1,9 +1,10 @@
+use eyre::{eyre, Result};
 use reqwest::blocking::{Client, Response};
 use reqwest::header::RETRY_AFTER;
 use reqwest::StatusCode;
 use serde_derive::Deserialize;
 use serde_json::Value;
-use std::error::Error;
+use std::panic;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -15,7 +16,7 @@ pub trait DriveItemHandler<DriveItem> {
     fn handle(&mut self, item: DriveItem);
 }
 
-fn get(client: &Client, uri: &str) -> Result<Response, Box<dyn Error>> {
+fn get(client: &Client, uri: &str) -> Result<Response> {
     let mut retries = 3;
     let mut delay = 1;
     loop {
@@ -194,7 +195,7 @@ pub fn sync_drive_items<DriveItem: 'static>(
     reset_link: String,
     link: String,
     handler: &mut impl DriveItemHandler<DriveItem>,
-) -> Result<String, Box<dyn Error>>
+) -> Result<String>
 where
     DriveItem: Send + serde::de::DeserializeOwned,
 {
@@ -219,6 +220,17 @@ where
             }
         }
     }
-    t.join()
-        .map_err(|any| string_error::into_err(format!("{:?}", any)))
+    match t.join() {
+        Ok(delta_link) => Ok(delta_link),
+        Err(err) => {
+            match err.downcast::<&str>() {
+                Ok(s) => {
+                    Err(eyre!(s))
+                }
+                Err(err) => {
+                    panic::resume_unwind(err)
+                }
+            }
+        }
+    }
 }
