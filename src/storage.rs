@@ -1,4 +1,3 @@
-use rand::{thread_rng, Rng};
 use std::{marker::PhantomData, io::Write};
 
 pub struct Storage<T> {
@@ -45,32 +44,21 @@ impl<T> Storage<T> {
         T: serde::ser::Serialize,
     {
         if let Some(path) = &self.path {
-            let mut rng = thread_rng();
-            let int = rng.gen_range(1000..10000);
-            let mut tmp_path = path.to_path_buf();
-            assert!(tmp_path.set_extension(int.to_string()));
-            match std::fs::File::create(&tmp_path) {
+            match tempfile::NamedTempFile::new_in(path.parent().unwrap()) {
                 Ok(file) => {
                     let mut writer = std::io::BufWriter::new(file);
                     if let Err(error) = serde_cbor::to_writer(&mut writer, &state) {
                         eprintln!("{}\n", error);
                     } else if let Err(error) = writer.flush() {
                         eprintln!("{}\n", error);
-                    } else if let Err(error) = std::fs::rename(&tmp_path, path) {
-                        eprintln!("{}\n", error);
-                    } else {
-                        // Everything succeeded. Return with no further actions.
-                        return;
-                    }
-                    // tmp_path was created but not renamed.
-                    if let Err(error) = std::fs::remove_file(&tmp_path) {
+                    } else if let Err(error) = writer.into_inner().unwrap().persist(path) {
                         eprintln!("{}\n", error);
                     }
                 }
                 Err(error) => {
                     eprintln!("{}\n", error);
                 }
-            }
+            };
         }
     }
 }
