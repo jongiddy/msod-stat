@@ -140,8 +140,10 @@ fn fetch_drive(
         .unwrap_or_else(|| DriveSnapshot::default(drive_id));
     bar.set_position(snapshot.state.size);
     let snapshot = sync_items(client, snapshot, initial_link(drive_id), &bar)?;
-    cache.save(&snapshot);
     bar.finish_and_clear();
+    if let Err(err) = cache.save(&snapshot) {
+        eprintln!("Error saving cache: {}", err);
+    }
     Ok(snapshot)
 }
 

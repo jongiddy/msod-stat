@@ -1,4 +1,5 @@
-use std::{marker::PhantomData, io::Write};
+use std::io::Write;
+use std::marker::PhantomData;
 
 pub struct Storage<T> {
     path: Option<std::path::PathBuf>,
@@ -39,26 +40,17 @@ impl<T> Storage<T> {
         None
     }
 
-    pub fn save(&self, state: &T)
+    pub fn save(&self, state: &T) -> eyre::Result<()>
     where
         T: serde::ser::Serialize,
     {
         if let Some(path) = &self.path {
-            match tempfile::NamedTempFile::new_in(path.parent().unwrap()) {
-                Ok(file) => {
-                    let mut writer = std::io::BufWriter::new(file);
-                    if let Err(error) = serde_cbor::to_writer(&mut writer, &state) {
-                        eprintln!("{}\n", error);
-                    } else if let Err(error) = writer.flush() {
-                        eprintln!("{}\n", error);
-                    } else if let Err(error) = writer.into_inner().unwrap().persist(path) {
-                        eprintln!("{}\n", error);
-                    }
-                }
-                Err(error) => {
-                    eprintln!("{}\n", error);
-                }
-            };
+            let file = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
+            let mut writer = std::io::BufWriter::new(file);
+            serde_cbor::to_writer(&mut writer, &state)?;
+            writer.flush()?;
+            writer.into_inner()?.persist(path)?;
         }
+        Ok(())
     }
 }
