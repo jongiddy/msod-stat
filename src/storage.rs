@@ -1,5 +1,5 @@
 use rand::{thread_rng, Rng};
-use std::marker::PhantomData;
+use std::{marker::PhantomData, io::Write};
 
 pub struct Storage<T> {
     path: Option<std::path::PathBuf>,
@@ -51,18 +51,16 @@ impl<T> Storage<T> {
             assert!(tmp_path.set_extension(int.to_string()));
             match std::fs::File::create(&tmp_path) {
                 Ok(file) => {
-                    let result = {
-                        let mut writer = std::io::BufWriter::new(file);
-                        serde_cbor::to_writer(&mut writer, &state)
-                    };
-                    if let Err(error) = result {
+                    let mut writer = std::io::BufWriter::new(file);
+                    if let Err(error) = serde_cbor::to_writer(&mut writer, &state) {
+                        eprintln!("{}\n", error);
+                    } else if let Err(error) = writer.flush() {
+                        eprintln!("{}\n", error);
+                    } else if let Err(error) = std::fs::rename(&tmp_path, path) {
                         eprintln!("{}\n", error);
                     } else {
-                        if let Err(error) = std::fs::rename(&tmp_path, path) {
-                            eprintln!("{}\n", error);
-                        } else {
-                            return;
-                        }
+                        // Everything succeeded. Return with no further actions.
+                        return;
                     }
                     // tmp_path was created but not renamed.
                     if let Err(error) = std::fs::remove_file(&tmp_path) {
