@@ -5,11 +5,6 @@ use oauth2::{
     AuthType, AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl,
     Scope, TokenUrl,
 };
-use open;
-use rand::seq::SliceRandom;
-use rand::thread_rng;
-use std::io;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tiny_http::{Method, Request, Response, Server, StatusCode};
 use url::Url;
 
@@ -97,35 +92,8 @@ fn get_authorization_code(server: &Server, csrf_token: CsrfToken) -> Result<Stri
         "No more incoming connections and auth code not supplied",
     ))
 }
-fn start_server() -> Result<Server> {
-    // Originally MS Graph required an exact match for the redirect URL, including the port.
-    // To reduce the chance of failing with a fixed port, we used 8 different ports. Now, the
-    // port is not considered for a valid Redirect URI, so it can be set to
-    // http://localhost/redirect, but we haven't yet modified this code to try more ports.
-    let mut ports: [u16; 8] = [3003, 17465, 22496, 23620, 25243, 27194, 28207, 32483];
-    // Select ports in random order to prevent herding and add a bit of security through
-    // non-deterministic behavior.
-    let mut rng = thread_rng();
-    ports.shuffle(&mut rng);
-    let mut socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0);
-    for port in &ports {
-        socket.set_port(*port);
-        match Server::http(socket) {
-            Ok(server) => return Ok(server),
-            Err(err) => {
-                match err.downcast::<io::Error>() {
-                    Ok(io_err) => {
-                        ensure!(io_err.kind() == io::ErrorKind::AddrInUse, io_err);
-                        // if this port is in use, try the next port
-                    }
-                    Err(err) => {
-                        bail!(err);
-                    }
-                }
-            }
-        }
-    }
-    Err(eyre!("Could not find an available port"))
+fn start_server() -> eyre::Result<Server> {
+    tiny_http::Server::http("127.0.0.1:0").map_err(|e| eyre!(e))
 }
 
 pub fn authenticate(client_id: String) -> Result<BasicTokenResponse> {
